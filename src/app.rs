@@ -221,12 +221,11 @@ impl WeatherSlot {
     }
 }
 
-/// One clock: the computer's time or a city's, each with its own map switch.
+/// One clock: the computer's time or a city's.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Tab {
     /// `None` for the computer's time.
     pub city: Option<City>,
-    pub show_map: bool,
 }
 
 pub struct App {
@@ -237,6 +236,8 @@ pub struct App {
     /// is open; every city opened gets its own after it.
     pub tabs: Vec<Tab>,
     pub active: usize,
+    /// Whether the map shows: one switch for every tab.
+    pub show_map: bool,
     pub map_style: MapStyle,
     pub show_seconds: bool,
     /// Index into `THEMES`.
@@ -269,11 +270,9 @@ impl App {
         Self {
             lang,
             system,
-            tabs: vec![Tab {
-                city: None,
-                show_map: false,
-            }],
+            tabs: vec![Tab { city: None }],
             active: 0,
+            show_map: true,
             map_style: MapStyle::default(),
             show_seconds: true,
             theme: 0,
@@ -324,13 +323,14 @@ impl App {
                 country: city.country.to_owned(),
                 lat: city.lat,
                 lon: city.lon,
-                map: true,
+                map: None,
             }),
             calendar: self.calendar.address.clone(),
             mac_calendar: self.calendar.mac,
             reminder: self.calendar.reminder,
             rung: self.calendar.rung.clone(),
-            local_map: self.tabs[0].show_map,
+            map: Some(self.show_map),
+            local_map: None,
             active: self.active,
             cities: self
                 .tabs
@@ -343,7 +343,7 @@ impl App {
                         country: city.country.to_owned(),
                         lat: city.lat,
                         lon: city.lon,
-                        map: tab.show_map,
+                        map: None,
                     })
                 })
                 .collect(),
@@ -378,6 +378,7 @@ impl App {
         if let Ok(style) = MapStyle::from_str(&state.map_style, true) {
             self.map_style = style;
         }
+        self.show_map = state.shows_map();
         self.show_seconds = state.seconds;
         self.show_weather = state.weather;
         self.home = state
@@ -392,18 +393,12 @@ impl App {
         self.calendar.rung = state.rung.clone();
 
         let on_screen = self.city();
-        let mut tabs = vec![Tab {
-            city: None,
-            show_map: state.local_map,
-        }];
+        let mut tabs = vec![Tab { city: None }];
         for saved in &state.cities {
             if let Some(city) = cities::db().find_saved(&saved.name, saved.lat, saved.lon)
                 && !tabs.iter().any(|tab| tab.city == Some(city))
             {
-                tabs.push(Tab {
-                    city: Some(city),
-                    show_map: saved.map,
-                });
+                tabs.push(Tab { city: Some(city) });
             }
         }
         let active = match (with_active, on_screen) {
@@ -453,15 +448,12 @@ impl App {
         tab.city.map_or(self.system, |city| Zone::City(city.tz))
     }
 
-    /// Switches to the tab of `city`, opening one (with the map showing) if there is none.
+    /// Switches to the tab of `city`, opening one if there is none.
     pub fn open_city(&mut self, city: City) {
         self.active = match self.tabs.iter().position(|tab| tab.city == Some(city)) {
             Some(index) => index,
             None => {
-                self.tabs.push(Tab {
-                    city: Some(city),
-                    show_map: true,
-                });
+                self.tabs.push(Tab { city: Some(city) });
                 self.tabs.len() - 1
             }
         };
@@ -771,10 +763,7 @@ impl App {
                     ..AlarmPanel::default()
                 });
             }
-            'm' => {
-                let tab = &mut self.tabs[self.active];
-                tab.show_map = !tab.show_map;
-            }
+            'm' => self.show_map = !self.show_map,
             't' => return Mode::Themes(ThemePicker::new(self.theme)),
             'g' => {
                 return Mode::Calendar(match self.calendar.connected() {
@@ -784,11 +773,10 @@ impl App {
             }
             'v' => {
                 // The style only shows on the map, so a hidden map comes up first.
-                let tab = &mut self.tabs[self.active];
-                if tab.show_map {
+                if self.show_map {
                     self.map_style = self.map_style.next();
                 } else {
-                    tab.show_map = true;
+                    self.show_map = true;
                 }
             }
             's' => self.show_seconds = !self.show_seconds,
@@ -1115,7 +1103,6 @@ mod tests {
         assert!(matches!(app.mode, Mode::Clock));
         assert_eq!(app.city().map(|c| c.name), Some("Tokyo"));
         assert_eq!(app.zone(), Zone::City(chrono_tz::Asia::Tokyo));
-        assert!(app.tab().show_map, "a city brings up the map");
 
         press(&mut app, KeyCode::Char('x'));
         assert_eq!(
@@ -1123,7 +1110,7 @@ mod tests {
             Zone::City(chrono_tz::UTC),
             "closing the only city brings back local time"
         );
-        assert!(app.city().is_none() && !app.tab().show_map);
+        assert!(app.city().is_none());
     }
 
     #[test]
@@ -1256,22 +1243,22 @@ mod tests {
     }
 
     #[test]
-    fn each_tab_shows_or_hides_its_own_map() {
+    fn one_map_switch_for_every_tab() {
         let mut app = app();
+        assert!(app.show_map, "the map shows from the start");
         press(&mut app, KeyCode::Char('m'));
-        assert!(app.tab().show_map, "the map opens in local time");
         app.open_city(city("Tokyo"));
         app.open_city(city("London"));
+        assert!(!app.show_map, "a new city leaves a hidden map hidden");
         press(&mut app, KeyCode::Char('m'));
-        assert!(!app.tab().show_map, "the map closes in the London tab");
         press(&mut app, KeyCode::Left);
-        assert!(app.tab().show_map, "the Tokyo tab keeps its own");
+        assert!(app.show_map, "shown in London, it shows in Tokyo too");
+        press(&mut app, KeyCode::Char('m'));
+        press(&mut app, KeyCode::Right);
+        assert!(!app.show_map, "hidden in Tokyo, it is hidden in London too");
         press(&mut app, KeyCode::Char('x'));
         press(&mut app, KeyCode::Char('x'));
-        assert!(
-            app.city().is_none() && app.tab().show_map,
-            "and local time its own"
-        );
+        assert!(app.city().is_none() && !app.show_map, "and in local time");
     }
 
     #[test]
@@ -1356,8 +1343,9 @@ mod tests {
     #[test]
     fn the_style_key_brings_up_a_hidden_map_before_changing_its_style() {
         let mut app = app();
+        app.show_map = false;
         press(&mut app, KeyCode::Char('v'));
-        assert!(app.tab().show_map);
+        assert!(app.show_map);
         assert_eq!(app.map_style, MapStyle::Ascii);
         press(&mut app, KeyCode::Char('v'));
         assert_eq!(app.map_style, MapStyle::Braille);
@@ -1440,7 +1428,6 @@ mod tests {
     #[test]
     fn restores_everything_it_saves() {
         let mut app = app();
-        press(&mut app, KeyCode::Char('m'));
         for query in ["Tokyo", "London"] {
             app.open_city(city(query));
         }
@@ -1462,7 +1449,7 @@ mod tests {
         assert_eq!(copy.state(), saved);
         assert_eq!(tab_names(&copy), ["local", "Tokyo", "London"]);
         assert_eq!(copy.city().map(|c| c.name), Some("Tokyo"));
-        assert!(copy.tabs[0].show_map && !copy.tabs[2].show_map);
+        assert!(!copy.show_map);
         assert_eq!(copy.map_style, MapStyle::Braille);
         assert!(!copy.show_seconds);
         assert_eq!(theme_name(&copy), "Nord");

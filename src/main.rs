@@ -56,7 +56,7 @@ struct Cli {
     #[arg(long)]
     list_themes: bool,
 
-    /// Show the world map in the local time tab too
+    /// Show the world map, on every tab
     #[arg(short, long)]
     map: bool,
 
@@ -152,7 +152,7 @@ fn main() -> ExitCode {
         app.show_seconds = false;
     }
     if cli.map {
-        app.tabs[0].show_map = true;
+        app.show_map = true;
     }
     if let Some(address) = &cli.calendar {
         app.set_calendar(Some(address.clone()));

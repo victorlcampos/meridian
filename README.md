@@ -40,7 +40,7 @@ follows. Everything you set is saved as you go.
 ```
 
 <details>
-<summary>Local time with its map open, in braille (<code>m</code>, then <code>v</code>), marking your city (<code>W</code>)</summary>
+<summary>Local time with the map in braille (<code>v</code>), marking your city (<code>W</code>)</summary>
 
 ```text
                                  Local time · America/Sao_Paulo
@@ -90,9 +90,10 @@ you pick.
   country after a comma to tell homonyms apart: `Portland, Maine`,
   `Paris, US`. `←` `→` switch cities, `x` closes one, and the tab bar shows
   the time in every city. 34 000 cities are built in.
-- **ASCII world map.** A city tab opens with the map, the city marked and the
-  night side shaded. Local time can show it too, with your city marked. `m` shows or hides the map of the tab on screen; `v` switches
-  between ASCII, braille and block drawings.
+- **ASCII world map.** The city on screen is marked and the night side
+  shaded; on local time the map marks your city. `m` shows or hides the map
+  on every tab at once; `v` switches between ASCII, braille and block
+  drawings.
 - **50 themes.** `t` lists color themes after well-known editor themes:
   Tokyo Night, Dracula, Catppuccin, Gruvbox, Nord, Solarized and more. Moving
   through the list shows each one at once; type to filter.
@@ -151,7 +152,7 @@ saved too. Run `meridian --help` for every option.
 | `c` or `/` | Add a city (it takes the place of local time) |
 | `←` `→` | Switch cities (also `Tab`, `Shift+Tab`, `1`-`9`) |
 | `x` | Close the city; closing the last one brings local time back |
-| `m` | Show or hide the map in this tab |
+| `m` | Show or hide the map, on every tab |
 | `v` | Map style: ASCII, braille, blocks (brings a hidden map up first) |
 | `t` | Clock theme |
 | `w` | Show or hide the weather (in local time, pick your city first) |
@@ -286,10 +287,10 @@ Relógio de terminal responsivo, feito para tiling window managers. Começa na
 hora do computador; tecle `c` e digite uma cidade, com ou sem acento,
 inclusive em português (`Tóquio`, `Nova Iorque`, `Munique`), para adicioná-la:
 daí as abas passam a ser as suas cidades, `←` `→` trocam de cidade e `x` fecha
-uma (fechar a última volta à hora local). Cada
-aba de cidade abre com o mapa-múndi em ASCII, a cidade marcada, o lado da
-noite sombreado e a previsão do tempo das próximas horas (`w` esconde); na hora
-local o mapa abre e fecha com `m` e marca a sua cidade.
+uma (fechar a última volta à hora local). O
+mapa-múndi em ASCII marca a cidade da aba e sombreia o lado da noite (na hora
+local, marca a sua cidade), e a previsão do tempo cobre as próximas horas (`w`
+esconde). `m` mostra ou esconde o mapa em todas as abas de uma vez.
 `v` troca o estilo do mapa e `t` o tema do relógio, entre 50 temas de editores
 (Tokyo Night, Dracula, Catppuccin, Gruvbox…). Na hora local, `w` pergunta
 sua cidade uma vez e passa a mostrar a previsão dela (`W` troca a cidade). `g` conecta o Calendário do Mac, com todas as contas do app

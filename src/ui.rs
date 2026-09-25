@@ -25,14 +25,14 @@ use crate::{clockface, layout, solar};
 pub fn render(frame: &mut Frame, app: &App, now: DateTime<Utc>) {
     let area = frame.area();
     let palette = app.palette();
-    let screen = layout::split(area, app.tab().show_map, app.shown_tabs().len() > 1);
+    let screen = layout::split(area, app.show_map, app.shown_tabs().len() > 1);
     let buf = frame.buffer_mut();
     buf.set_style(area, palette.base());
     if let Some(tabs) = screen.tabs {
         render_tabs(app, now, tabs, buf);
     }
     // The tab wants its map but the window has no room for it.
-    let map_no_room = app.tab().show_map && screen.map.is_none();
+    let map_no_room = app.show_map && screen.map.is_none();
     render_clock(app, now, screen.clock, map_no_room, buf);
     if let Some(map) = screen.map {
         // A city tab marks its city; the local tab marks every city with a tab.
@@ -1139,7 +1139,7 @@ mod tests {
         apps.push(with_cities(&many));
         let mut overview = with_cities(&many);
         overview.active = 0;
-        overview.tabs[0].show_map = true;
+        overview.show_map = true;
         apps.push(overview);
         for mode in 0..3 {
             let mut app = with_city("Auckland");
@@ -1297,7 +1297,7 @@ mod tests {
     fn the_local_map_marks_your_city() {
         let mut app = app();
         app.home = Some(cities::db().search("Belo Horizonte", 1)[0]);
-        app.tabs[0].show_map = true;
+        app.show_map = true;
         let text = screen(&draw(&app, 120, 40, now()));
         assert_eq!(text.matches('●').count(), 1, "{text}");
         assert!(text.contains(" Belo Horizonte "), "{text}");
@@ -1318,7 +1318,9 @@ mod tests {
         assert!(small.contains("The map needs a bigger window"), "{small}");
         let large = screen(&draw(&app, 120, 40, now()));
         assert!(!large.contains("bigger window"), "{large}");
-        let hidden = screen(&draw(&self::app(), 50, 10, now()));
+        let mut without_map = with_city("Tokyo");
+        without_map.show_map = false;
+        let hidden = screen(&draw(&without_map, 50, 10, now()));
         assert!(!hidden.contains("bigger window"), "{hidden}");
     }
 

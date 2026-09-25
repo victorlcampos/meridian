@@ -28,8 +28,12 @@ pub struct State {
     pub reminder: u32,
     /// Event occurrences whose reminder already rang.
     pub rung: Vec<String>,
-    /// Whether the local time tab shows the map.
-    pub local_map: bool,
+    /// Whether the map shows, on every tab. Absent from files saved while
+    /// each tab had its own switch: see `State::shows_map`.
+    pub map: Option<bool>,
+    /// The local time tab's own map switch, in those older files.
+    #[serde(skip_serializing)]
+    pub local_map: Option<bool>,
     /// Tab on screen: 0 is the local time, then one per city.
     pub active: usize,
     pub cities: Vec<SavedCity>,
@@ -48,11 +52,28 @@ impl Default for State {
             mac_calendar: false,
             reminder: 5,
             rung: Vec::new(),
-            local_map: false,
+            map: None,
+            local_map: None,
             active: 0,
             cities: Vec::new(),
             alarms: Vec::new(),
         }
+    }
+}
+
+impl State {
+    /// Whether the map shows. Files saved while each tab had its own switch
+    /// keep the one of the tab that was on screen.
+    pub fn shows_map(&self) -> bool {
+        self.map
+            .unwrap_or_else(|| match self.active.checked_sub(1) {
+                None => self.local_map.unwrap_or(true),
+                Some(city) => self
+                    .cities
+                    .get(city)
+                    .and_then(|saved| saved.map)
+                    .unwrap_or(true),
+            })
     }
 }
 
@@ -67,12 +88,9 @@ pub struct SavedCity {
     pub country: String,
     pub lat: f64,
     pub lon: f64,
-    #[serde(default = "shown")]
-    pub map: bool,
-}
-
-fn shown() -> bool {
-    true
+    /// The tab's own map switch, in files saved before there was one for all.
+    #[serde(default, skip_serializing)]
+    pub map: Option<bool>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -316,9 +334,31 @@ mod tests {
         let state: State =
             serde_json::from_str(r#"{"cities": [{"name": "Tokyo", "lat": 35.69, "lon": 139.69}]}"#)
                 .unwrap();
-        assert!(state.seconds && state.cities[0].map);
+        assert!(state.seconds && state.shows_map());
         let mut app = app();
         app.restore(&state, true);
         assert_eq!(app.tabs[1].city.map(|c| c.name), Some("Tokyo"));
+    }
+
+    #[test]
+    fn files_with_a_map_switch_per_tab_keep_the_one_on_screen() {
+        let old = |active: usize, local: bool, tokyo: bool| -> State {
+            let text = format!(
+                r#"{{"active": {active}, "local_map": {local}, "cities":
+                    [{{"name": "Tokyo", "lat": 35.69, "lon": 139.69, "map": {tokyo}}}]}}"#
+            );
+            serde_json::from_str(&text).unwrap()
+        };
+        assert!(!old(1, true, false).shows_map());
+        assert!(old(1, false, true).shows_map());
+        assert!(!old(0, false, true).shows_map());
+        let mut app = app();
+        app.restore(&old(1, true, false), true);
+        assert!(!app.show_map);
+        let text = serde_json::to_string(&app.state()).unwrap();
+        assert!(
+            text.contains(r#""map":false"#) && !text.contains("local_map"),
+            "{text}"
+        );
     }
 }
