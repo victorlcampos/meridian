@@ -9,7 +9,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Widget};
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::alarm::Alarm;
 use crate::app::{AlarmPanel, App, CalendarPanel, CalendarSource, Mode, Search, ThemePicker};
@@ -417,6 +417,8 @@ fn event_line(app: &App, now: DateTime<Utc>, width: u16) -> Option<Info> {
     };
     let countdown = app.lang.countdown(event.start - now);
     let title = &event.title;
+    // A title too long for the pane gives way, so the time stays in view.
+    let short = shorten(title, usize::from(width).saturating_sub(when.width() + 1));
     let lines = [
         format!(
             "{} {when} {title} · {} {countdown}",
@@ -424,6 +426,7 @@ fn event_line(app: &App, now: DateTime<Utc>, width: u16) -> Option<Info> {
         ),
         format!("{when} {title} · {} {countdown}", text.in_),
         format!("{when} {title}"),
+        format!("{when} {short}"),
     ];
     Some(Info {
         line: widest_fitting(
@@ -542,6 +545,25 @@ fn widest_fitting(mut lines: Vec<Line<'static>>, width: u16) -> Line<'static> {
         .position(|line| line.width() <= usize::from(width))
         .unwrap_or(lines.len() - 1);
     lines.swap_remove(position)
+}
+
+/// `text` cut down to `width` columns, ending in "…" when anything was cut.
+fn shorten(text: &str, width: usize) -> String {
+    if text.width() <= width {
+        return text.to_owned();
+    }
+    let Some(room) = width.checked_sub(1) else {
+        return String::new();
+    };
+    let mut used = 0;
+    let kept: String = text
+        .chars()
+        .take_while(|character| {
+            used += character.width().unwrap_or(0);
+            used <= room
+        })
+        .collect();
+    format!("{}…", kept.trim_end())
 }
 
 fn alarm_time(alarm: &Alarm) -> String {
@@ -1448,6 +1470,16 @@ mod tests {
         let tomorrow = with_event("Retro", now() + Duration::days(1));
         let text = screen(&draw(&tomorrow, 100, 30, now()));
         assert!(text.contains("Next event Sat 13:04 Retro"), "{text}");
+    }
+
+    #[test]
+    fn keeps_the_event_time_in_view_when_the_title_is_too_long() {
+        let title =
+            "[Training] Tax knowledge & the tax reform | Learn+ - Flows & Processes edition";
+        let app = with_event(title, now() + Duration::minutes(35));
+        let text = screen(&draw(&app, 60, 30, now()));
+        assert!(text.contains("13:39 [Training] Tax knowledge"), "{text}");
+        assert!(text.contains('…') && !text.contains("edition"), "{text}");
     }
 
     #[test]
