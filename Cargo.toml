@@ -1,0 +1,24 @@
+[package]
+name = "meridian"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "Responsive terminal clock with an ASCII world map, city time zones and blinking alarms"
+license = "MIT"
+repository = "https://github.com/victorlcampos/meridian"
+readme = "README.md"
+keywords = ["clock", "tui", "timezone", "world-map", "alarm"]
+categories = ["command-line-utilities"]
+exclude = ["tools/.cache"]
+
+[dependencies]
+chrono = "0.4"
+chrono-tz = "0.10"
+clap = { version = "4", features = ["derive"] }
+deunicode = "1"
+iana-time-zone = "0.1.65"
+ratatui = "0.30"
+unicode-width = "0.2"
+
+[profile.release]
+strip = true
