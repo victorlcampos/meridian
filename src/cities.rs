@@ -101,6 +101,20 @@ impl CityDb {
     }
 }
 
+impl CityDb {
+    /// The city called `name` nearest to where it was saved, within a degree.
+    pub fn find_saved(&self, name: &str, lat: f64, lon: f64) -> Option<City> {
+        self.entries
+            .iter()
+            .map(|entry| entry.city)
+            .filter(|city| city.name == name)
+            .map(|city| ((city.lat - lat).powi(2) + (city.lon - lon).powi(2), city))
+            .filter(|(distance, _)| *distance <= 1.0)
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+            .map(|(_, city)| city)
+    }
+}
+
 impl Entry {
     fn score(&self, query: &str) -> Option<u8> {
         let name = rank(&self.name, query).map(|r| NAME_TIERS[r]);
@@ -255,6 +269,16 @@ mod tests {
     fn ignores_blank_queries_and_nonsense() {
         assert!(db().search("   ", 10).is_empty());
         assert!(db().search("qqqzzzxxx", 10).is_empty());
+    }
+
+    #[test]
+    fn finds_a_saved_city_by_name_and_position() {
+        let maine = db().find_saved("Portland", 43.66, -70.26).unwrap();
+        assert_eq!(maine.region, "Maine");
+        let oregon = db().find_saved("Portland", 45.52, -122.68).unwrap();
+        assert_eq!(oregon.region, "Oregon");
+        assert!(db().find_saved("Portland", 0.0, 0.0).is_none());
+        assert!(db().find_saved("Atlantis", 45.52, -122.68).is_none());
     }
 
     #[test]

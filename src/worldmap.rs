@@ -208,11 +208,34 @@ pub struct Marker<'a> {
     pub label: &'a str,
 }
 
+/// Land by daylight, city dots and the Sun.
+#[derive(Clone, Copy, Debug)]
+pub struct MapColors {
+    pub day: Color,
+    pub dusk: Color,
+    pub night: Color,
+    pub marker: Color,
+    pub sun: Color,
+}
+
+impl Default for MapColors {
+    fn default() -> Self {
+        Self {
+            day: Color::Green,
+            dusk: Color::Yellow,
+            night: Color::Blue,
+            marker: Color::Red,
+            sun: Color::Yellow,
+        }
+    }
+}
+
 pub struct WorldMap<'a> {
     pub style: MapStyle,
+    pub colors: MapColors,
     /// Where the Sun is overhead; when present, the night side is shaded.
     pub sun: Option<(f64, f64)>,
-    pub marker: Option<Marker<'a>>,
+    pub markers: Vec<Marker<'a>>,
 }
 
 impl Widget for WorldMap<'_> {
@@ -232,49 +255,70 @@ impl Widget for WorldMap<'_> {
                 let light = self
                     .sun
                     .map_or(Light::Day, |sun| solar::light(sun, lat, lon));
+                let color = match light {
+                    Light::Day => self.colors.day,
+                    Light::Twilight => self.colors.dusk,
+                    Light::Night => self.colors.night,
+                };
                 buf[(area.x + col, area.y + row)]
                     .set_char(symbol)
-                    .set_fg(land_color(light));
+                    .set_fg(color);
             }
         }
         if let Some((x, y)) = self.sun.and_then(|(lat, lon)| map.cell(lat, lon)) {
-            buf[(x, y)]
-                .set_char('☼')
-                .set_style(Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD));
+            buf[(x, y)].set_char('☼').set_style(
+                Style::new()
+                    .fg(self.colors.sun)
+                    .add_modifier(Modifier::BOLD),
+            );
         }
-        if let Some(marker) = self.marker {
-            draw_marker(buf, &map, &marker);
-        }
+        draw_markers(buf, &map, &self.markers, self.colors.marker);
     }
 }
 
-fn land_color(light: Light) -> Color {
-    match light {
-        Light::Day => Color::Green,
-        Light::Twilight => Color::Yellow,
-        Light::Night => Color::Blue,
+/// A red dot on each city and its name on whichever side has room. Among
+/// several cities a name that would cover another dot or name is left out; a
+/// lone city always gets its name, cut to fit if needed.
+fn draw_markers(buf: &mut Buffer, map: &Projection, markers: &[Marker], color: Color) {
+    let cells: Vec<Option<(u16, u16)>> = markers
+        .iter()
+        .map(|marker| map.cell(marker.lat, marker.lon))
+        .collect();
+    let mut taken = Vec::new();
+    for &(x, y) in cells.iter().flatten() {
+        buf[(x, y)]
+            .set_char('●')
+            .set_style(Style::new().fg(color).add_modifier(Modifier::BOLD));
+        taken.push(Rect::new(x, y, 1, 1));
     }
-}
 
-/// A red dot on the city and its name on whichever side has room.
-fn draw_marker(buf: &mut Buffer, map: &Projection, marker: &Marker) {
-    let Some((x, y)) = map.cell(marker.lat, marker.lon) else {
-        return;
-    };
-    buf[(x, y)]
-        .set_char('●')
-        .set_style(Style::new().fg(Color::Red).add_modifier(Modifier::BOLD));
-
-    let tag = format!(" {} ", marker.label);
-    let width = tag.width() as u16;
-    let room_right = map.area.right().saturating_sub(x + 2);
-    let room_left = x.saturating_sub(map.area.left() + 1);
     let style = Style::new().add_modifier(Modifier::REVERSED | Modifier::BOLD);
-    if width <= room_right || room_right >= room_left {
-        buf.set_stringn(x + 2, y, &tag, usize::from(room_right), style);
-    } else {
-        let width = width.min(room_left);
-        buf.set_stringn(x - 1 - width, y, &tag, usize::from(width), style);
+    for (marker, cell) in markers.iter().zip(&cells) {
+        let Some((x, y)) = *cell else {
+            continue;
+        };
+        let tag = format!(" {} ", marker.label);
+        let width = tag.width() as u16;
+        let right = Rect::new(x.saturating_add(2), y, width, 1);
+        let left = Rect::new(x.saturating_sub(width + 1), y, width, 1);
+        let free = |spot: &Rect| {
+            spot.x >= map.area.left()
+                && spot.right() <= map.area.right()
+                && !taken.iter().any(|other| other.intersects(*spot))
+        };
+        if let Some(spot) = [right, left].into_iter().find(free) {
+            buf.set_string(spot.x, spot.y, &tag, style);
+            taken.push(spot);
+        } else if markers.len() == 1 {
+            let room_right = map.area.right().saturating_sub(x + 2);
+            let room_left = x.saturating_sub(map.area.left() + 1);
+            if room_right >= room_left {
+                buf.set_stringn(x + 2, y, &tag, usize::from(room_right), style);
+            } else {
+                let width = width.min(room_left);
+                buf.set_stringn(x - 1 - width, y, &tag, usize::from(width), style);
+            }
+        }
     }
 }
 
@@ -284,14 +328,15 @@ mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
-    fn render(style: MapStyle, width: u16, height: u16, marker: Option<Marker>) -> Buffer {
+    fn render(style: MapStyle, width: u16, height: u16, markers: Vec<Marker>) -> Buffer {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         terminal
             .draw(|frame| {
                 let map = WorldMap {
                     style,
+                    colors: MapColors::default(),
                     sun: Some((0.0, 0.0)),
-                    marker,
+                    markers,
                 };
                 frame.render_widget(map, frame.area());
             })
@@ -340,7 +385,7 @@ mod tests {
     fn draws_land_in_every_style_and_size() {
         for style in [MapStyle::Ascii, MapStyle::Braille, MapStyle::Blocks] {
             for (width, height) in [(1, 1), (2, 1), (7, 3), (40, 8), (120, 24), (300, 90)] {
-                let buf = render(style, width, height, None);
+                let buf = render(style, width, height, Vec::new());
                 let land = buf.content().iter().filter(|c| c.symbol() != " ").count();
                 if width >= 40 {
                     assert!(land > usize::from(width), "{style:?} {width}x{height}");
@@ -356,7 +401,7 @@ mod tests {
             lon: -46.6,
             label: "São Paulo",
         };
-        let buf = render(MapStyle::Ascii, 100, 20, Some(marker));
+        let buf = render(MapStyle::Ascii, 100, 20, vec![marker]);
         let text: String = buf.content().iter().map(|c| c.symbol()).collect();
         let dot = text.chars().position(|c| c == '●').expect("marker drawn");
         let (x, y) = (dot % 100, dot / 100);
@@ -371,10 +416,37 @@ mod tests {
             lon: 174.76,
             label: "Auckland",
         };
-        let buf = render(MapStyle::Braille, 100, 20, Some(marker));
+        let buf = render(MapStyle::Braille, 100, 20, vec![marker]);
         let row: Vec<String> = (0..100).map(|x| buf[(x, 17)].symbol().to_owned()).collect();
         let dot = row.iter().position(|cell| cell == "●").unwrap();
         assert_eq!(dot, 98);
         assert_eq!(row[87..97].concat(), " Auckland ");
+    }
+
+    #[test]
+    fn keeps_names_of_nearby_cities_from_covering_each_other() {
+        let city = |lat, lon, label| Marker { lat, lon, label };
+        let markers = vec![city(51.51, -0.13, "London"), city(48.86, 2.35, "Paris")];
+        let buf = render(MapStyle::Ascii, 60, 12, markers);
+        let row: Vec<String> = (0..60).map(|x| buf[(x, 2)].symbol().to_owned()).collect();
+        assert_eq!((row[29].as_str(), row[30].as_str()), ("●", "●"));
+        assert_eq!(row[31..39].concat(), " London ");
+        assert_eq!(row[22..29].concat(), " Paris ");
+    }
+
+    #[test]
+    fn leaves_out_names_that_have_no_room() {
+        let city = |lat, lon, label| Marker { lat, lon, label };
+        // Three cities in adjacent cells: the one in the middle has no side free.
+        let markers = vec![
+            city(51.51, -0.13, "London"),
+            city(48.86, 2.35, "Paris"),
+            city(50.11, 8.68, "Frankfurt"),
+        ];
+        let buf = render(MapStyle::Ascii, 60, 12, markers);
+        let row: String = (0..60).map(|x| buf[(x, 2)].symbol().to_owned()).collect();
+        assert_eq!(row.matches('●').count(), 3, "{row}");
+        assert!(row.contains(" London ") && row.contains(" Paris "), "{row}");
+        assert!(!row.contains("Frankfurt"), "{row}");
     }
 }

@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Embedded in the macOS binary (see build.rs), so macOS can ask for access
+     to the calendars on behalf of meridian itself rather than the terminal. -->
+<plist version="1.0">
+<dict>
+	<key>CFBundleIdentifier</key>
+	<string>io.github.victorlcampos.meridian</string>
+	<key>CFBundleName</key>
+	<string>meridian</string>
+	<key>CFBundleDisplayName</key>
+	<string>meridian</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>meridian shows your next event under the clock and rings a reminder before it. O meridian mostra seu próximo evento e toca um lembrete antes dele.</string>
+	<key>NSCalendarsUsageDescription</key>
+	<string>meridian shows your next event under the clock and rings a reminder before it. O meridian mostra seu próximo evento e toca um lembrete antes dele.</string>
+</dict>
+</plist>

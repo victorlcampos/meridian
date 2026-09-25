@@ -162,6 +162,8 @@ pub struct Alarms {
 }
 
 impl Alarms {
+    /// Sets an alarm. One with the same time, zone and label is switched back
+    /// on rather than doubled, so a `--alarm` in a startup script adds it once.
     pub fn add(
         &mut self,
         when: When,
@@ -177,17 +179,32 @@ impl Alarms {
                 (zone.local_time(at).time(), at)
             }
         };
-        self.last_id += 1;
-        self.items.push(Alarm {
-            id: self.last_id,
+        let timer = matches!(when, When::In(_));
+        if !timer
+            && let Some(same) = self.items.iter_mut().find(|alarm| {
+                !alarm.timer && alarm.time == time && alarm.zone == zone && alarm.label == label
+            })
+        {
+            same.next = Some(next);
+            return same.id;
+        }
+        self.insert(Alarm {
+            id: 0,
             time,
             zone,
             place,
             label,
             daily: false,
-            timer: matches!(when, When::In(_)),
+            timer,
             next: Some(next),
-        });
+        })
+    }
+
+    /// Keeps `alarm` as it is, under a new id.
+    pub fn insert(&mut self, mut alarm: Alarm) -> u32 {
+        self.last_id += 1;
+        alarm.id = self.last_id;
+        self.items.push(alarm);
         self.items.sort_by_key(|alarm| (alarm.time, alarm.id));
         self.last_id
     }
@@ -414,6 +431,55 @@ mod tests {
         let alarm = &alarms.list()[0];
         assert_eq!(alarm.next, Some(utc(2026, 9, 25, 12, 10, 0)));
         assert_eq!(alarm.time, hm(9, 10));
+    }
+
+    #[test]
+    fn setting_the_same_alarm_again_switches_it_back_on() {
+        let mut alarms = Alarms::default();
+        let now = utc(2026, 9, 25, 12, 0, 0);
+        let first = alarms.add(
+            When::At(hm(7, 30)),
+            "Wake".into(),
+            SAO_PAULO,
+            String::new(),
+            now,
+        );
+        alarms.toggle(first, now);
+        let again = alarms.add(
+            When::At(hm(7, 30)),
+            "Wake".into(),
+            SAO_PAULO,
+            String::new(),
+            now,
+        );
+        assert_eq!((again, alarms.list().len()), (first, 1));
+        assert!(alarms.list()[0].enabled());
+        alarms.add(
+            When::At(hm(7, 30)),
+            "Gym".into(),
+            SAO_PAULO,
+            String::new(),
+            now,
+        );
+        alarms.add(
+            When::In(Duration::minutes(5)),
+            "Wake".into(),
+            SAO_PAULO,
+            String::new(),
+            now,
+        );
+        alarms.add(
+            When::In(Duration::minutes(5)),
+            "Wake".into(),
+            SAO_PAULO,
+            String::new(),
+            now,
+        );
+        assert_eq!(
+            alarms.list().len(),
+            4,
+            "other labels and timers are separate"
+        );
     }
 
     #[test]

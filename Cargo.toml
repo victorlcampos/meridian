@@ -3,7 +3,7 @@ name = "meridian"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
-description = "Responsive terminal clock with an ASCII world map, city time zones and blinking alarms"
+description = "Responsive terminal clock: city tabs, ASCII world map, 50 themes, weather, calendar reminders and blinking alarms"
 license = "MIT"
 repository = "https://github.com/victorlcampos/meridian"
 readme = "README.md"
@@ -12,13 +12,24 @@ categories = ["command-line-utilities"]
 exclude = ["tools/.cache"]
 
 [dependencies]
-chrono = "0.4"
+chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = "0.10"
 clap = { version = "4", features = ["derive"] }
 deunicode = "1"
 iana-time-zone = "0.1.65"
 ratatui = "0.30"
+rrule = "0.14"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 unicode-width = "0.2"
+ureq = { version = "3", features = ["platform-verifier"] }
 
 [profile.release]
 strip = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6"
+libc = "0.2"
+objc2 = "0.6"
+objc2-event-kit = { version = "0.3", default-features = false, features = ["std", "block2", "bitflags", "EKCalendarItem", "EKEvent", "EKEventStore", "EKObject", "EKParticipant", "EKTypes", "EKCalendar"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSDate", "NSError", "NSString", "NSObject", "NSEnumerator"] }
