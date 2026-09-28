@@ -24,6 +24,8 @@ pub struct State {
     /// The weather scene moves; absent in older files, which always animated.
     #[serde(default = "fx_live_on")]
     pub weather_fx_live: bool,
+    /// The temperature shows under the weather scene.
+    pub weather_fx_temperature: bool,
     /// City of the local time tab, for its weather.
     pub home: Option<SavedCity>,
     /// Secret iCal address (or .ics file) of the calendar.
@@ -55,6 +57,7 @@ impl Default for State {
             weather: true,
             weather_fx: false,
             weather_fx_live: true,
+            weather_fx_temperature: false,
             home: None,
             calendar: None,
             mac_calendar: false,

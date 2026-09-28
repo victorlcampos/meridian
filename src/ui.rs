@@ -208,7 +208,8 @@ impl Row<'_> {
 }
 
 /// Draws the clock, with the weather scene in its top right corner when it
-/// fits. Returns the scene's frame period while a live one shows.
+/// fits, and in its own step of `w` the temperature under the scene.
+/// Returns the scene's frame period while a live one shows.
 fn render_clock(
     app: &App,
     now: DateTime<Utc>,
@@ -229,7 +230,9 @@ fn render_clock(
     };
     let lines = |width, weather| infos(app, now, local, width, map_no_room, weather);
     let scene = app.fx_scene(now);
-    let plan = plan(&texts, &lines, area, scene.is_some(), app.show_weather);
+    let temperature = scene.and_then(|_| scene_temperature(app));
+    let label = u16::from(temperature.is_some());
+    let plan = plan(&texts, &lines, area, scene.map(|_| label), app.show_weather);
     let palette = app.palette();
     for (row, rect) in plan.rows.into_iter().zip(plan.rects) {
         match row {
@@ -245,19 +248,51 @@ fn render_clock(
             Row::Gap => {}
         }
     }
+    if let (Some(rect), Some(temperature)) = (plan.label, temperature) {
+        Line::from(temperature).bold().centered().render(rect, buf);
+    }
     let (spot, scene) = (plan.scene?, scene?);
     weather_fx::draw(buf, spot, &palette, scene, now);
     scene.frame_ms()
 }
 
-/// The clock's rows, the rectangle each takes, and the weather scene's spot.
+/// The temperature under the weather scene, in its own step of `w`: that of
+/// the tab on screen, or of your city in local time.
+fn scene_temperature(app: &App) -> Option<String> {
+    let place = app.city().or(app.home).filter(|_| app.fx_temperature)?;
+    let forecast = app.weather_of(&place)?.forecast.as_ref()?;
+    Some(format!("{}°C", forecast.temperature.round() as i64))
+}
+
+/// The clock's rows, the rectangle each takes, the weather scene's spot and
+/// the rows under it for the temperature.
 struct Plan<'a> {
     rows: Vec<Row<'a>>,
     rects: Vec<Rect>,
     scene: Option<Rect>,
+    label: Option<Rect>,
 }
 
-/// Lays out the clock in `area`, and the weather scene too when `scene`;
+impl<'a> Plan<'a> {
+    /// The clock's rows at `rects`, the scene at `spot` and `label` rows
+    /// under it.
+    fn with_scene(rows: Vec<Row<'a>>, rects: Vec<Rect>, spot: Rect, label: u16) -> Self {
+        let under = Rect {
+            y: spot.bottom(),
+            height: label,
+            ..spot
+        };
+        Self {
+            rows,
+            rects,
+            scene: Some(spot),
+            label: (label > 0).then_some(under),
+        }
+    }
+}
+
+/// Lays out the clock in `area`, and the weather scene too when `scene`
+/// asks for it, with that many rows under it for the temperature;
 /// `lines(width, weather)` gives the lines around the digits for a width,
 /// the forecast's among them or not.
 ///
@@ -267,30 +302,29 @@ struct Plan<'a> {
 /// it, smaller digits, no seconds or plain text: still centered in the pane
 /// where that leaves the corner free, else moved left only as far as the
 /// scene needs. A pane shows the scene whenever it has room for the
-/// smallest one, so a larger pane never lacks what a smaller one shows.
-/// Only where not even that fits does the weather it stood for show as
-/// text.
+/// smallest one, so a larger pane never lacks what a smaller one shows;
+/// the temperature under it gives way first. Only where not even that fits
+/// does the weather it stood for show as text.
 fn plan<'a>(
     texts: &[&'a str],
     lines: &dyn Fn(u16, bool) -> Vec<Info>,
     area: Rect,
-    scene: bool,
+    scene: Option<u16>,
     weather: bool,
 ) -> Plan<'a> {
     let rows = arrange(texts, &lines(area.width, weather), area);
-    if scene {
-        if let Some((rects, spot)) = settle(&rows, area) {
-            return Plan {
-                rows,
-                rects,
-                scene: Some(spot),
-            };
-        }
-        if let Some(plan) = beside(texts, lines, area, weather) {
-            return plan;
+    if let Some(label) = scene {
+        // Without room for both, the temperature goes before the scene.
+        for label in (0..=label).rev() {
+            if let Some((rects, spot)) = settle(&rows, area, label) {
+                return Plan::with_scene(rows, rects, spot, label);
+            }
+            if let Some(plan) = beside(texts, lines, area, weather, label) {
+                return plan;
+            }
         }
     }
-    let rows = if scene && !weather {
+    let rows = if scene.is_some() && !weather {
         arrange(texts, &lines(area.width, true), area)
     } else {
         rows
@@ -300,6 +334,7 @@ fn plan<'a>(
         rows,
         rects,
         scene: None,
+        label: None,
     }
 }
 
@@ -309,8 +344,9 @@ fn plan<'a>(
 /// whether the clock stays centered in the pane.
 type Rank = (bool, u16, bool, u16, u16, bool);
 
-/// The scene in the top right corner and the clock sized to fit left of it,
-/// two columns away: first with every line whole, then the clock as large
+/// The scene in the top right corner, with `label` rows under it, and the
+/// clock sized to fit left of it, two columns away: first with every line
+/// whole, then the clock as large
 /// as it can be there (with seconds, if it can keep them), then a column of
 /// margin at its left, then the larger scene, then the clock centered in
 /// the pane; `None` when not even the smallest scene fits.
@@ -324,11 +360,12 @@ fn beside<'a>(
     lines: &dyn Fn(u16, bool) -> Vec<Info>,
     area: Rect,
     weather: bool,
+    label: u16,
 ) -> Option<Plan<'a>> {
     let tallest = (area.height / 2).clamp(weather_fx::MIN_ROWS, weather_fx::MAX_ROWS);
     let mut best: Option<(Rank, Plan<'a>)> = None;
     for tall in weather_fx::MIN_ROWS..=tallest {
-        let Some(spot) = spot(area, tall) else {
+        let Some(spot) = spot(area, tall, label) else {
             continue;
         };
         for margin in [0, 1] {
@@ -350,17 +387,12 @@ fn beside<'a>(
                 Row::Text(line) => line.width() <= usize::from(left.width),
                 _ => true,
             });
-            let settled = settle(&rows, area).filter(|(_, corner)| corner.height >= tall);
+            let settled = settle(&rows, area, label).filter(|(_, corner)| corner.height >= tall);
             let centered = settled.is_some();
             let (rects, spot) = settled.unwrap_or_else(|| (nearest(&rows, area, left), spot));
             let rank = (whole, scale, seconds, margin, spot.height, centered);
             if best.as_ref().is_none_or(|(best, _)| rank > *best) {
-                let plan = Plan {
-                    rows,
-                    rects,
-                    scene: Some(spot),
-                };
-                best = Some((rank, plan));
+                best = Some((rank, Plan::with_scene(rows, rects, spot, label)));
             }
         }
     }
@@ -427,30 +459,30 @@ fn place(rows: &[Row], area: Rect, drop: u16) -> Vec<Rect> {
         .collect()
 }
 
-/// The rows' places with the weather scene in the clock's top right corner,
-/// the clock stepping down as few rows as it takes to make room; `None`
-/// when that is not enough.
-fn settle(rows: &[Row], area: Rect) -> Option<(Vec<Rect>, Rect)> {
+/// The rows' places with the weather scene, and `label` rows under it, in
+/// the clock's top right corner, the clock stepping down as few rows as it
+/// takes to make room; `None` when that is not enough.
+fn settle(rows: &[Row], area: Rect, label: u16) -> Option<(Vec<Rect>, Rect)> {
     let total: u16 = rows.iter().map(Row::height).sum();
     let spare = area.height.saturating_sub(total);
     (0..=spare - spare / 2).find_map(|drop| {
         let rects = place(rows, area, drop);
-        corner(&rects, area).map(|spot| (rects, spot))
+        corner(&rects, area, label).map(|spot| (rects, spot))
     })
 }
 
 /// Where the weather scene goes: the largest that fits in the top right
-/// corner of the clock, a cell clear of the digits and the lines; `None` when
-/// even the smallest would touch them.
-fn corner(taken: &[Rect], area: Rect) -> Option<Rect> {
+/// corner of the clock with `label` rows under it, a cell clear of the
+/// digits and the lines; `None` when even the smallest would touch them.
+fn corner(taken: &[Rect], area: Rect, label: u16) -> Option<Rect> {
     (weather_fx::MIN_ROWS..=weather_fx::MAX_ROWS)
         .rev()
         .find_map(|rows| {
-            let spot = spot(area, rows)?;
+            let spot = spot(area, rows, label)?;
             let clear = Rect {
                 x: spot.x - 1,
                 width: spot.width + 1,
-                height: spot.height + 1,
+                height: spot.height + label + 1,
                 ..spot
             };
             taken
@@ -461,9 +493,9 @@ fn corner(taken: &[Rect], area: Rect) -> Option<Rect> {
 }
 
 /// The weather scene `rows` tall in the top right corner of `area`, a cell
-/// in from its edges and with a cell to spare to its left and below; `None`
-/// when that does not fit.
-fn spot(area: Rect, rows: u16) -> Option<Rect> {
+/// in from its edges, with `label` rows under it and a cell to spare to its
+/// left and below them; `None` when that does not fit.
+fn spot(area: Rect, rows: u16, label: u16) -> Option<Rect> {
     let width = weather_fx::width(rows);
     let spot = Rect::new(
         area.right().checked_sub(width + 1)?,
@@ -471,7 +503,7 @@ fn spot(area: Rect, rows: u16) -> Option<Rect> {
         width,
         rows,
     );
-    (spot.x > area.x && spot.bottom() < area.bottom()).then_some(spot)
+    (spot.x > area.x && spot.bottom() + label < area.bottom()).then_some(spot)
 }
 
 /// Big digits and as many info lines as fit, most important first; seconds are
@@ -1739,23 +1771,33 @@ mod tests {
             text.contains(['╵', '╷']),
             "the live scene drizzles:\n{text}"
         );
-        // Live -> off, then back to info.
+        assert!(!text.contains("21°C"), "{text}");
+        // Live -> live with the temperature under the scene.
+        app.on_key(KeyEvent::from(KeyCode::Char('w')), now());
+        assert_eq!((app.show_weather, app.weather_fx), (false, Fx::Live));
+        assert!(app.fx_temperature);
+        let text = screen(&draw(&app, 100, 30, now()));
+        assert!(text.contains("21°C") && !text.contains("Drizzle"), "{text}");
+        // Then off, and back to info.
         app.on_key(KeyEvent::from(KeyCode::Char('w')), now());
         assert_eq!((app.show_weather, app.weather_fx), (false, Fx::Off));
+        assert!(!app.fx_temperature);
         app.on_key(KeyEvent::from(KeyCode::Char('w')), now());
         let text = screen(&draw(&app, 100, 30, now()));
         assert!(text.contains("Drizzle"), "{text}");
     }
 
-    /// What `render_clock` puts where: `d` digits, `t` a line, `s` the scene.
+    /// What `render_clock` puts where: `d` digits, `t` a line, `s` the scene
+    /// and `l` the temperature under it.
     fn laid_out(app: &App, area: Rect) -> Vec<(Rect, char)> {
         let local = app.zone().local_time(now());
         let full = local.format("%H:%M:%S").to_string();
         let short = local.format("%H:%M").to_string();
         let texts = [full.as_str(), short.as_str()];
         let lines = |width, weather| infos(app, now(), local, width, false, weather);
-        let scene = app.fx_scene(now()).is_some();
-        let plan = plan(&texts, &lines, area, scene, app.show_weather);
+        let scene = app.fx_scene(now());
+        let label = u16::from(scene.and_then(|_| scene_temperature(app)).is_some());
+        let plan = plan(&texts, &lines, area, scene.map(|_| label), app.show_weather);
         let mut laid: Vec<(Rect, char)> = plan
             .rows
             .iter()
@@ -1773,6 +1815,7 @@ mod tests {
             })
             .collect();
         laid.extend(plan.scene.map(|rect| (rect, 's')));
+        laid.extend(plan.label.map(|rect| (rect, 'l')));
         laid
     }
 
@@ -1782,8 +1825,13 @@ mod tests {
         let mut app = with_weather("Tokyo");
         app.weather_fx = Fx::Still;
         let mut shown = 0;
-        for width in (0..=260).step_by(7) {
-            for height in (0..=80).step_by(3) {
+        for (width, height, temperature) in (0..=260)
+            .step_by(7)
+            .flat_map(|width| (0..=80).step_by(3).map(move |height| (width, height)))
+            .flat_map(|(width, height)| [(width, height, false), (width, height, true)])
+        {
+            app.fx_temperature = temperature;
+            {
                 let area = Rect::new(3, 2, width, height);
                 let laid = laid_out(&app, area);
                 for (i, (rect, kind)) in laid.iter().enumerate() {
@@ -1806,11 +1854,15 @@ mod tests {
                         "{scene:?}"
                     );
                     assert_eq!(scene.width, weather_fx::width(scene.height));
+                    if let Some((label, _)) = laid.iter().find(|(_, kind)| *kind == 'l') {
+                        assert!(temperature);
+                        assert_eq!(*label, Rect::new(scene.x, scene.bottom(), scene.width, 1));
+                    }
                 }
             }
         }
         assert!(
-            shown > 300,
+            shown > 600,
             "the scene shows wherever there is room: {shown}"
         );
     }
@@ -1930,7 +1982,7 @@ mod tests {
         for width in 24..=140 {
             for height in 6..=24 {
                 let area = Rect::new(0, 0, width, height);
-                let plan = plan(&texts, &lines, area, true, false);
+                let plan = plan(&texts, &lines, area, Some(0), false);
                 for (row, rect) in plan.rows.iter().zip(&plan.rects) {
                     if let (Row::Text(line), false) = (row, rect.is_empty()) {
                         assert!(
@@ -1949,15 +2001,50 @@ mod tests {
         let mut app = with_weather("Tokyo");
         app.weather_fx = Fx::Live;
         app.show_weather = false;
-        for width in 0..=90 {
-            for height in 0..=30 {
-                let area = Rect::new(0, 0, width, height);
-                let shows = laid_out(&app, area).iter().any(|(_, kind)| *kind == 's');
-                let room = width >= weather_fx::width(weather_fx::MIN_ROWS) + 2
-                    && height >= weather_fx::MIN_ROWS + 2;
-                assert_eq!(shows, room, "{width}x{height}");
+        for temperature in [false, true] {
+            app.fx_temperature = temperature;
+            for width in 0..=90 {
+                for height in 0..=30 {
+                    let area = Rect::new(0, 0, width, height);
+                    let laid = laid_out(&app, area);
+                    let shows = |wanted| laid.iter().any(|(_, kind)| *kind == wanted);
+                    let room = width >= weather_fx::width(weather_fx::MIN_ROWS) + 2
+                        && height >= weather_fx::MIN_ROWS + 2;
+                    assert_eq!(shows('s'), room, "{width}x{height}");
+                    // The temperature needs a row more, and gives way first.
+                    let label = temperature && room && height > weather_fx::MIN_ROWS + 2;
+                    assert_eq!(shows('l'), label, "{width}x{height}");
+                }
             }
         }
+    }
+
+    #[test]
+    fn shows_the_temperature_under_the_scene() {
+        use crate::weather_fx::Fx;
+        let mut app = with_weather("Tokyo");
+        app.show_map = false;
+        app.show_weather = false;
+        app.weather_fx = Fx::Live;
+        app.fx_temperature = true;
+        let buf = draw(&app, 100, 30, now());
+        let clock = layout::split(Rect::new(0, 0, 100, 30), false, false).clock;
+        let laid = laid_out(&app, clock);
+        let find = |wanted| laid.iter().find(|(_, kind)| *kind == wanted).unwrap().0;
+        let (scene, label) = (find('s'), find('l'));
+        assert_eq!(
+            (label.x, label.y, label.width),
+            (scene.x, scene.bottom(), scene.width)
+        );
+        let row: String = (label.x..label.right())
+            .map(|x| buf[(x, label.y)].symbol())
+            .collect();
+        assert_eq!(
+            row,
+            format!("{:^width$}", "21°C", width = usize::from(label.width))
+        );
+        let (x, y) = find_text(&buf, "21°C").unwrap();
+        assert!(buf[(x, y)].modifier.contains(Modifier::BOLD));
     }
 
     #[test]

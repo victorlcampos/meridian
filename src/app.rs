@@ -257,6 +257,8 @@ pub struct App {
     pub show_weather: bool,
     /// The weather scene in the clock's corner: off, one still frame, or animated.
     pub weather_fx: Fx,
+    /// The temperature under the weather scene.
+    pub fx_temperature: bool,
     /// Where the local time tab is, for its weather.
     pub home: Option<City>,
     /// Forecasts by `weather::key`.
@@ -289,6 +291,7 @@ impl App {
             unsaved: false,
             show_weather: true,
             weather_fx: Fx::Off,
+            fx_temperature: false,
             home: None,
             weather: HashMap::new(),
             net: None,
@@ -328,6 +331,7 @@ impl App {
             weather: self.show_weather,
             weather_fx: self.weather_fx != Fx::Off,
             weather_fx_live: self.weather_fx == Fx::Live,
+            weather_fx_temperature: self.fx_temperature,
             home: self.home.map(|city| SavedCity {
                 name: city.name.to_owned(),
                 region: city.region.to_owned(),
@@ -398,6 +402,7 @@ impl App {
             (true, false) => Fx::Still,
             (false, _) => Fx::Off,
         };
+        self.fx_temperature = state.weather_fx_temperature;
         self.home = state
             .home
             .as_ref()
@@ -590,13 +595,15 @@ impl App {
     }
 
     /// `w` cycles the weather: info, info with a still scene, a live scene
-    /// on its own, off.
+    /// on its own, the live scene with the temperature under it, off.
     pub fn cycle_weather(&mut self) {
-        (self.show_weather, self.weather_fx) = match (self.show_weather, self.weather_fx) {
-            (true, Fx::Off) => (true, Fx::Still),
-            (true, Fx::Still) => (false, Fx::Live),
-            (false, Fx::Live) => (false, Fx::Off),
-            _ => (true, Fx::Off),
+        let now = (self.show_weather, self.weather_fx, self.fx_temperature);
+        (self.show_weather, self.weather_fx, self.fx_temperature) = match now {
+            (true, Fx::Off, _) => (true, Fx::Still, false),
+            (true, Fx::Still, _) => (false, Fx::Live, false),
+            (false, Fx::Live, false) => (false, Fx::Live, true),
+            (false, Fx::Live, true) => (false, Fx::Off, false),
+            _ => (true, Fx::Off, false),
         };
     }
 
@@ -2082,14 +2089,23 @@ END:VCALENDAR
         );
         press(&mut app, KeyCode::Char('w'));
         assert_eq!(
-            (app.show_weather, app.weather_fx),
-            (false, Fx::Live),
+            (app.show_weather, app.weather_fx, app.fx_temperature),
+            (false, Fx::Live, false),
             "then a live scene on its own"
         );
         press(&mut app, KeyCode::Char('w'));
         assert_eq!(
-            (app.show_weather, app.weather_fx),
-            (false, Fx::Off),
+            (app.show_weather, app.weather_fx, app.fx_temperature),
+            (false, Fx::Live, true),
+            "then the live scene with the temperature under it"
+        );
+        let mut copy = self::app();
+        copy.restore(&app.state(), true);
+        assert!(copy.fx_temperature, "saved");
+        press(&mut app, KeyCode::Char('w'));
+        assert_eq!(
+            (app.show_weather, app.weather_fx, app.fx_temperature),
+            (false, Fx::Off, false),
             "then off"
         );
         press(&mut app, KeyCode::Char('w'));
