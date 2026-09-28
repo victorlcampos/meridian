@@ -248,11 +248,13 @@ struct Plan<'a> {
 ///
 /// The scene takes the top right corner the clock leaves free, the clock
 /// stepping down a few rows if that makes room. Failing that the scene keeps
-/// the corner all the same and the clock makes do left of it, with smaller
-/// digits, without seconds or as plain text, whichever fits: a pane shows
-/// the scene whenever it has room for the smallest one, so a larger pane
-/// never lacks what a smaller one shows. Only where not even that fits does
-/// the weather it stood for show as text.
+/// the corner all the same and the clock makes do with what fits left of
+/// it, smaller digits, no seconds or plain text: still centered in the pane
+/// where that leaves the corner free, else moved left only as far as the
+/// scene needs. A pane shows the scene whenever it has room for the
+/// smallest one, so a larger pane never lacks what a smaller one shows.
+/// Only where not even that fits does the weather it stood for show as
+/// text.
 fn plan<'a>(
     texts: &[&'a str],
     lines: &dyn Fn(u16, bool) -> Vec<Info>,
@@ -286,16 +288,22 @@ fn plan<'a>(
     }
 }
 
-/// How a clock beside the scene ranks, the higher the better: every line
-/// whole, then the scale of its digits, whether it keeps the seconds, a
-/// column of margin at its left, and the rows of the scene.
-type Rank = (bool, u16, bool, u16, u16);
+/// How a clock sized to fit beside the scene ranks, the higher the better:
+/// every line whole, then the scale of its digits, whether it keeps the
+/// seconds, a column of margin at its left, the rows of the scene, and
+/// whether the clock stays centered in the pane.
+type Rank = (bool, u16, bool, u16, u16, bool);
 
-/// The scene in the top right corner and the clock centered left of it,
+/// The scene in the top right corner and the clock sized to fit left of it,
 /// two columns away: first with every line whole, then the clock as large
 /// as it can be there (with seconds, if it can keep them), then a column of
-/// margin at its left, then the larger scene; `None` when not even the
-/// smallest scene fits.
+/// margin at its left, then the larger scene, then the clock centered in
+/// the pane; `None` when not even the smallest scene fits.
+///
+/// The clock stays centered in the pane where that leaves the corner free
+/// for a scene as large, else it moves left only as far as the scene needs:
+/// centered in the columns left of the scene, it could leave a wide gap
+/// between them.
 fn beside<'a>(
     texts: &[&'a str],
     lines: &dyn Fn(u16, bool) -> Vec<Info>,
@@ -327,9 +335,11 @@ fn beside<'a>(
                 Row::Text(line) => line.width() <= usize::from(left.width),
                 _ => true,
             });
-            let rank = (whole, scale, seconds, margin, tall);
+            let settled = settle(&rows, area).filter(|(_, corner)| corner.height >= tall);
+            let centered = settled.is_some();
+            let (rects, spot) = settled.unwrap_or_else(|| (nearest(&rows, area, left), spot));
+            let rank = (whole, scale, seconds, margin, spot.height, centered);
             if best.as_ref().is_none_or(|(best, _)| rank > *best) {
-                let rects = place(&rows, left, 0);
                 let plan = Plan {
                     rows,
                     rects,
@@ -340,6 +350,38 @@ fn beside<'a>(
         }
     }
     best.map(|(_, plan)| plan)
+}
+
+/// Where each row goes within `left`, a part of `area`: centered in `area`,
+/// or moved left just as far as it takes to stay within `left`. A line too
+/// wide for `left` takes the whole of it, where it gets cut.
+fn nearest(rows: &[Row], area: Rect, left: Rect) -> Vec<Rect> {
+    let rects = place(rows, area, 0);
+    let over = rects
+        .iter()
+        .filter(|rect| rect.width <= left.width)
+        .map(|rect| rect.right().saturating_sub(left.right()))
+        .max()
+        .unwrap_or(0);
+    rects
+        .into_iter()
+        .map(|rect| {
+            if rect.is_empty() {
+                rect
+            } else if rect.width > left.width {
+                Rect {
+                    x: left.x,
+                    width: left.width,
+                    ..rect
+                }
+            } else {
+                Rect {
+                    x: rect.x.saturating_sub(over).max(left.x),
+                    ..rect
+                }
+            }
+        })
+        .collect()
 }
 
 /// Where each row goes, stacked in the middle of `area` and `drop` rows
@@ -1740,22 +1782,67 @@ mod tests {
         let laid = laid_out(&app, Rect::new(0, 0, 120, 40));
         assert_eq!(find(&laid, 's'), Some(Rect::new(101, 1, 18, 8)));
         // A small pane gives the scene a column at the right, and the clock
-        // centers in the rest, with big digits where they fit.
-        for (width, height) in [(86, 13), (43, 12), (30, 12)] {
+        // the digits that fit left of it, big where they fit. They keep to
+        // the middle where that leaves the corner free, else they move left
+        // only as far as the scene needs, two columns away from it.
+        let panes = [
+            (86, 13, true),
+            (81, 12, false),
+            (43, 12, false),
+            (30, 12, false),
+        ];
+        for (width, height, centered) in panes {
             let laid = laid_out(&app, Rect::new(0, 0, width, height));
             let scene = find(&laid, 's').expect("a scene");
             assert_eq!((scene.right(), scene.y), (width - 1, 1));
-            assert!(find(&laid, 'd').is_some(), "{width}x{height}");
-            for (rect, kind) in &laid {
-                assert!(
-                    *kind == 's' || rect.right() + 2 <= scene.x,
-                    "{kind} {rect:?}"
-                );
+            let digits = find(&laid, 'd').expect("digits");
+            if centered {
+                assert_eq!(digits.x, (width - digits.width) / 2, "{width}x{height}");
+            } else {
+                assert_eq!(digits.right() + 2, scene.x, "{width}x{height}");
+                for (rect, kind) in &laid {
+                    assert!(
+                        *kind == 's' || rect.right() + 2 <= scene.x,
+                        "{kind} {rect:?}"
+                    );
+                }
             }
         }
         // A pane too narrow for big digits keeps the scene over its clock.
         let laid = laid_out(&app, Rect::new(0, 0, 15, 11));
         assert!(find(&laid, 's').is_some() && find(&laid, 'd').is_none());
+    }
+
+    #[test]
+    fn the_clock_keeps_to_the_middle_with_or_without_the_next_event() {
+        // Without the next event's line the digits alone would fill the
+        // pane; made small enough to leave the scene its corner, they stay
+        // in the middle, the scene close by, just as with the line.
+        use crate::weather_fx::Fx;
+        let mut app = with_weather("Tokyo");
+        app.lang = Lang::Pt;
+        app.weather_fx = Fx::Live;
+        app.show_weather = false;
+        let area = Rect::new(0, 1, 86, 10);
+        let without = laid_out(&app, area);
+        app.calendar.address = Some("https://example.com/basic.ics".into());
+        app.calendar.events = vec![crate::calendar::Event {
+            uid: "1".into(),
+            title: "Fórum - Otimização de Operação".into(),
+            start: now() + Duration::minutes(56),
+        }];
+        let with = laid_out(&app, area);
+        assert_eq!(with.len(), without.len() + 1, "{with:?}");
+        for laid in [without, with] {
+            let find = |wanted| {
+                laid.iter()
+                    .find(|(_, kind)| *kind == wanted)
+                    .map(|(rect, _)| *rect)
+            };
+            let digits = find('d').expect("digits");
+            assert_eq!((digits.x, digits.width), (16, 54), "{laid:?}");
+            assert_eq!(find('s'), Some(Rect::new(71, 2, 14, 6)), "{laid:?}");
+        }
     }
 
     #[test]
