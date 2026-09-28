@@ -248,10 +248,11 @@ struct Plan<'a> {
 ///
 /// The scene takes the top right corner the clock leaves free, the clock
 /// stepping down a few rows if that makes room. Failing that the scene keeps
-/// the corner and the clock centers in the room left of it, the largest
-/// digits it can have there beside the largest scene that allows them, up to
-/// half the pane tall. Where the clock would lose its big digits, the scene
-/// stays away and the weather it stood for shows as text.
+/// the corner all the same and the clock makes do left of it, with smaller
+/// digits, without seconds or as plain text, whichever fits: a pane shows
+/// the scene whenever it has room for the smallest one, so a larger pane
+/// never lacks what a smaller one shows. Only where not even that fits does
+/// the weather it stood for show as text.
 fn plan<'a>(
     texts: &[&'a str],
     lines: &dyn Fn(u16, bool) -> Vec<Info>,
@@ -285,9 +286,16 @@ fn plan<'a>(
     }
 }
 
+/// How a clock beside the scene ranks, the higher the better: every line
+/// whole, then the scale of its digits, whether it keeps the seconds, a
+/// column of margin at its left, and the rows of the scene.
+type Rank = (bool, u16, bool, u16, u16);
+
 /// The scene in the top right corner and the clock centered left of it,
-/// a column in from the left and two from the scene; `None` when no scene
-/// leaves the clock its big digits.
+/// two columns away: first with every line whole, then the clock as large
+/// as it can be there (with seconds, if it can keep them), then a column of
+/// margin at its left, then the larger scene; `None` when not even the
+/// smallest scene fits.
 fn beside<'a>(
     texts: &[&'a str],
     lines: &dyn Fn(u16, bool) -> Vec<Info>,
@@ -295,32 +303,40 @@ fn beside<'a>(
     weather: bool,
 ) -> Option<Plan<'a>> {
     let tallest = (area.height / 2).clamp(weather_fx::MIN_ROWS, weather_fx::MAX_ROWS);
-    let mut best: Option<(u16, Plan<'a>)> = None;
-    // The tallest scene first, so that it wins among equal digits.
-    for tall in (weather_fx::MIN_ROWS..=tallest).rev() {
+    let mut best: Option<(Rank, Plan<'a>)> = None;
+    for tall in weather_fx::MIN_ROWS..=tallest {
         let Some(spot) = spot(area, tall) else {
             continue;
         };
-        let left = Rect {
-            x: area.x + 1,
-            width: spot.x.saturating_sub(area.x + 3),
-            ..area
-        };
-        let rows = arrange(texts, &lines(left.width, weather), left);
-        let scale = rows.iter().find_map(|row| match row {
-            Row::Digits(_, scale) => Some(*scale),
-            _ => None,
-        });
-        if let Some(scale) = scale
-            && best.as_ref().is_none_or(|(best, _)| scale > *best)
-        {
-            let rects = place(&rows, left, 0);
-            let plan = Plan {
-                rows,
-                rects,
-                scene: Some(spot),
+        for margin in [0, 1] {
+            let left = Rect {
+                x: area.x + margin,
+                width: spot.x.saturating_sub(area.x + margin + 2),
+                ..area
             };
-            best = Some((scale, plan));
+            let rows = arrange(texts, &lines(left.width, weather), left);
+            // Plain text counts as scale 0.
+            let (scale, seconds) = rows
+                .iter()
+                .find_map(|row| match row {
+                    Row::Digits(text, scale) => Some((*scale, text.len() > 5)),
+                    _ => None,
+                })
+                .unwrap_or((0, false));
+            let whole = rows.iter().all(|row| match row {
+                Row::Text(line) => line.width() <= usize::from(left.width),
+                _ => true,
+            });
+            let rank = (whole, scale, seconds, margin, tall);
+            if best.as_ref().is_none_or(|(best, _)| rank > *best) {
+                let rects = place(&rows, left, 0);
+                let plan = Plan {
+                    rows,
+                    rects,
+                    scene: Some(spot),
+                };
+                best = Some((rank, plan));
+            }
         }
     }
     best.map(|(_, plan)| plan)
@@ -1724,8 +1740,8 @@ mod tests {
         let laid = laid_out(&app, Rect::new(0, 0, 120, 40));
         assert_eq!(find(&laid, 's'), Some(Rect::new(101, 1, 18, 8)));
         // A small pane gives the scene a column at the right, and the clock
-        // centers in the rest, keeping big digits.
-        for (width, height) in [(86, 13), (43, 12)] {
+        // centers in the rest, with big digits where they fit.
+        for (width, height) in [(86, 13), (43, 12), (30, 12)] {
             let laid = laid_out(&app, Rect::new(0, 0, width, height));
             let scene = find(&laid, 's').expect("a scene");
             assert_eq!((scene.right(), scene.y), (width - 1, 1));
@@ -1737,6 +1753,61 @@ mod tests {
                 );
             }
         }
+        // A pane too narrow for big digits keeps the scene over its clock.
+        let laid = laid_out(&app, Rect::new(0, 0, 15, 11));
+        assert!(find(&laid, 's').is_some() && find(&laid, 'd').is_none());
+    }
+
+    #[test]
+    fn lines_beside_the_scene_are_never_cut() {
+        use crate::weather_fx::Fx;
+        let mut app = with_weather("Tokyo");
+        app.lang = Lang::Pt;
+        app.show_map = false;
+        app.weather_fx = Fx::Live;
+        app.show_weather = false;
+        app.calendar.address = Some("https://example.com/basic.ics".into());
+        app.calendar.events = vec![crate::calendar::Event {
+            uid: "1".into(),
+            title: "Fórum - Otimização de Operação".into(),
+            start: now() + Duration::minutes(56),
+        }];
+        let local = app.zone().local_time(now());
+        let full = local.format("%H:%M:%S").to_string();
+        let short = local.format("%H:%M").to_string();
+        let texts = [full.as_str(), short.as_str()];
+        let lines = |width, weather| infos(&app, now(), local, width, false, weather);
+        for width in 24..=140 {
+            for height in 6..=24 {
+                let area = Rect::new(0, 0, width, height);
+                let plan = plan(&texts, &lines, area, true, false);
+                for (row, rect) in plan.rows.iter().zip(&plan.rects) {
+                    if let (Row::Text(line), false) = (row, rect.is_empty()) {
+                        assert!(
+                            line.width() <= usize::from(rect.width),
+                            "{width}x{height}: {line} in {rect:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_larger_pane_never_lacks_the_scene_a_smaller_one_shows() {
+        use crate::weather_fx::{self, Fx};
+        let mut app = with_weather("Tokyo");
+        app.weather_fx = Fx::Live;
+        app.show_weather = false;
+        for width in 0..=90 {
+            for height in 0..=30 {
+                let area = Rect::new(0, 0, width, height);
+                let shows = laid_out(&app, area).iter().any(|(_, kind)| *kind == 's');
+                let room = width >= weather_fx::width(weather_fx::MIN_ROWS) + 2
+                    && height >= weather_fx::MIN_ROWS + 2;
+                assert_eq!(shows, room, "{width}x{height}");
+            }
+        }
     }
 
     #[test]
@@ -1744,12 +1815,12 @@ mod tests {
         use crate::weather_fx::Fx;
         let mut app = with_weather("Tokyo");
         app.show_map = false;
-        let as_text = screen(&draw(&app, 30, 8, now()));
+        let as_text = screen(&draw(&app, 16, 5, now()));
         assert!(as_text.contains("21°C"), "{as_text}");
         app.cycle_weather();
         app.cycle_weather();
         assert_eq!((app.show_weather, app.weather_fx), (false, Fx::Live));
-        assert_eq!(screen(&draw(&app, 30, 8, now())), as_text);
+        assert_eq!(screen(&draw(&app, 16, 5, now())), as_text);
         let roomy = screen(&draw(&app, 100, 30, now()));
         assert!(!roomy.contains("21°C"), "the scene stands for it:\n{roomy}");
     }
@@ -1771,7 +1842,7 @@ mod tests {
         assert_eq!(pace(Fx::Live, 100, 30), Some(125), "drizzle");
         assert_eq!(pace(Fx::Still, 100, 30), None);
         assert_eq!(pace(Fx::Off, 100, 30), None);
-        assert_eq!(pace(Fx::Live, 30, 8), None, "not on screen");
+        assert_eq!(pace(Fx::Live, 40, 5), None, "not on screen");
     }
 
     #[test]

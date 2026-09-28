@@ -104,9 +104,9 @@ you pick.
   the theme's colors: the sun, or the moon in tonight's phase (upside down
   south of the equator), clouds, drizzle, rain, sleet, snow, fog and
   lightning. It sits in the top right corner, in room the clock leaves
-  free; a small pane makes room for it beside the clock, and only where
-  that would cost the big digits does the live scene give way to the
-  weather as text.
+  free; a small pane makes room for it beside the clock, which shrinks as
+  it must, and only a pane too small for the smallest scene shows the
+  weather as text instead.
 - **Calendar.** `g` connects the Mac Calendar (every account in the macOS
   Calendar app, Google included) or any iCal feed. The next event shows under
   the clock, and a reminder rings 5 minutes before it.

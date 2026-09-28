@@ -64,7 +64,7 @@ impl Scene {
 
 /// The smallest and the largest scene, in rows: below the one it is too
 /// coarse to read, above the other it would crowd the clock.
-pub const MIN_ROWS: u16 = 5;
+pub const MIN_ROWS: u16 = 4;
 pub const MAX_ROWS: u16 = 8;
 
 /// Columns of a scene `rows` tall: two a row keep its pixels (two to a
