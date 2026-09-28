@@ -588,17 +588,24 @@ fn sun(canvas: &mut Canvas, tones: &Tones, center: (f64, f64), r: f64, rays: boo
     );
     if rays {
         // A pixel of sky between the disc and the rays, which reach out a
-        // pixel or two, the straight ones and the slanted ones in turn.
+        // pixel or two, the straight ones and the slanted ones in turn. None
+        // goes past the nearest edge, or a cut ray would lose the sun its
+        // symmetry: without room to grow outward, rays grow inward instead,
+        // toward the disc.
         let pulse = (t * TAU / 3.0).sin();
         let start = r + 1.0;
+        let (w, h) = (canvas.width as f64, canvas.height as f64);
+        let edge = cx.min(cy).min(w - cx).min(h - cy);
         let long = (0.55 * r).round().max(1.0);
         for k in 0..8 {
             let turn = if k % 2 == 0 { pulse } else { -pulse };
             let reach = (long + 0.5 * turn).max(1.0);
+            let end = (start + reach).min(edge);
+            let begin = (end - reach).max(r);
             let (dy, dx) = (f64::from(k) * TAU / 8.0).sin_cos();
             let ray = [
-                (cx + dx * start, cy + dy * start),
-                (cx + dx * (start + reach), cy + dy * (start + reach)),
+                (cx + dx * begin, cy + dy * begin),
+                (cx + dx * end, cy + dy * end),
             ];
             canvas.stroke(&ray, 0.5, tones.sun);
         }
@@ -1215,6 +1222,55 @@ mod tests {
             left > 4 * right.max(1),
             "first quarter, south: {left} {right}"
         );
+    }
+
+    #[test]
+    fn the_sun_keeps_every_ray_whole_and_moving() {
+        // A clear sky's sun is symmetric: as many lit pixels above its middle
+        // row as below, and to the left of its middle column as to the right,
+        // at every size and every moment. And at every size it pulses.
+        let [themed, terminal] = palettes();
+        for palette in [themed, terminal] {
+            for rows in MIN_ROWS..=MAX_ROWS {
+                let mut frames = Vec::new();
+                for ms in (0..3_000).step_by(250) {
+                    let colors = &palette.sky;
+                    let mut canvas = Canvas::new(width(rows), rows, colors);
+                    let tones = Tones::new(colors, 0.0);
+                    let (w, h, u) = (canvas.width as f64, canvas.height as f64, canvas.unit);
+                    let (x, y, r) = body(sky(0).unwrap(), false, w, h, u).unwrap();
+                    sun(&mut canvas, &tones, (x, y), r, true, ms as f64 / 1000.0);
+                    let lit: Vec<(usize, usize)> = (0..canvas.height)
+                        .flat_map(|py| (0..canvas.width).map(move |px| (px, py)))
+                        .filter(|&(px, py)| {
+                            canvas
+                                .pixel(px, py)
+                                .is_some_and(|c| c != colors.bg.unwrap_or(0))
+                        })
+                        .filter(|&(px, py)| {
+                            // Glow pixels are faint; count the sun and its rays only.
+                            let c = canvas.pixel(px, py).unwrap();
+                            let [_, r, g, _] = c.to_be_bytes();
+                            u16::from(r) + u16::from(g) > 300
+                        })
+                        .collect();
+                    let (x0, x1) = (
+                        lit.iter().map(|p| p.0).min().unwrap(),
+                        lit.iter().map(|p| p.0).max().unwrap(),
+                    );
+                    let (y0, y1) = (
+                        lit.iter().map(|p| p.1).min().unwrap(),
+                        lit.iter().map(|p| p.1).max().unwrap(),
+                    );
+                    let (mx, my) = (x.floor() as usize, y.floor() as usize);
+                    assert_eq!(mx - x0, x1 - mx, "{rows} rows at {ms} ms: left and right");
+                    assert_eq!(my - y0, y1 - my, "{rows} rows at {ms} ms: above and below");
+                    frames.push(lit);
+                }
+                frames.dedup();
+                assert!(frames.len() > 1, "the sun pulses at {rows} rows");
+            }
+        }
     }
 
     #[test]
