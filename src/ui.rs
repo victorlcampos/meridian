@@ -18,11 +18,14 @@ use crate::i18n::Keys;
 use crate::maccal::Access;
 use crate::theme::THEMES;
 use crate::weather::{self, Hour};
+use crate::weather_fx;
 use crate::worldmap::{MapColors, Marker, WorldMap};
 use crate::zone::format_offset;
 use crate::{clockface, layout, solar};
 
-pub fn render(frame: &mut Frame, app: &App, now: DateTime<Utc>) {
+/// Draws the whole screen. Returns how often, in milliseconds, the picture
+/// changes by itself: the frame period of a live weather scene on screen.
+pub fn render(frame: &mut Frame, app: &App, now: DateTime<Utc>) -> Option<u64> {
     let area = frame.area();
     let palette = app.palette();
     let screen = layout::split(area, app.show_map, app.shown_tabs().len() > 1);
@@ -33,7 +36,7 @@ pub fn render(frame: &mut Frame, app: &App, now: DateTime<Utc>) {
     }
     // The tab wants its map but the window has no room for it.
     let map_no_room = app.show_map && screen.map.is_none();
-    render_clock(app, now, screen.clock, map_no_room, buf);
+    let animation = render_clock(app, now, screen.clock, map_no_room, buf);
     if let Some(map) = screen.map {
         // A city tab marks its city; the local tab marks every city with a tab.
         let cities = match app.city() {
@@ -79,6 +82,7 @@ pub fn render(frame: &mut Frame, app: &App, now: DateTime<Utc>) {
     if app.blink_on(now) {
         frame.buffer_mut().set_style(area, palette.flash());
     }
+    animation
 }
 
 /// A tab per clock with its current time. When they do not all fit the times
@@ -188,9 +192,17 @@ impl Row<'_> {
     }
 }
 
-fn render_clock(app: &App, now: DateTime<Utc>, area: Rect, map_no_room: bool, buf: &mut Buffer) {
+/// Draws the clock, with the weather scene in its top right corner when it
+/// fits. Returns the scene's frame period while a live one shows.
+fn render_clock(
+    app: &App,
+    now: DateTime<Utc>,
+    area: Rect,
+    map_no_room: bool,
+    buf: &mut Buffer,
+) -> Option<u64> {
     if area.is_empty() {
-        return;
+        return None;
     }
     let local = app.zone().local_time(now);
     let full = local.format("%H:%M:%S").to_string();
@@ -200,46 +212,199 @@ fn render_clock(app: &App, now: DateTime<Utc>, area: Rect, map_no_room: bool, bu
     } else {
         vec![&short]
     };
-    let infos = infos(app, now, local, area.width, map_no_room);
-    let rows = arrange(&texts, &infos, area);
-
-    let total: u16 = rows.iter().map(Row::height).sum();
-    let mut y = area.y + area.height.saturating_sub(total) / 2;
-    for row in rows {
-        let height = row.height();
-        if y + height > area.bottom() {
-            break;
-        }
+    let lines = |width, weather| infos(app, now, local, width, map_no_room, weather);
+    let scene = app.fx_scene(now);
+    let plan = plan(&texts, &lines, area, scene.is_some(), app.show_weather);
+    let palette = app.palette();
+    for (row, rect) in plan.rows.into_iter().zip(plan.rects) {
         match row {
-            Row::Digits(text, scale) => {
-                let width = clockface::size(text, scale).0;
-                let x = area.x + (area.width - width) / 2;
-                clockface::draw(
-                    text,
-                    scale,
-                    (x, y),
-                    Style::new().fg(app.palette().digits),
-                    buf,
-                );
-            }
-            Row::Text(line) => line.centered().render(
-                Rect {
-                    y,
-                    height: 1,
-                    ..area
-                },
+            _ if rect.is_empty() => {}
+            Row::Digits(text, scale) => clockface::draw(
+                text,
+                scale,
+                (rect.x, rect.y),
+                Style::new().fg(palette.digits),
                 buf,
             ),
+            Row::Text(line) => line.centered().render(rect, buf),
             Row::Gap => {}
         }
-        y += height;
     }
+    let (spot, scene) = (plan.scene?, scene?);
+    weather_fx::draw(buf, spot, &palette, scene, now);
+    scene.frame_ms()
+}
+
+/// The clock's rows, the rectangle each takes, and the weather scene's spot.
+struct Plan<'a> {
+    rows: Vec<Row<'a>>,
+    rects: Vec<Rect>,
+    scene: Option<Rect>,
+}
+
+/// Lays out the clock in `area`, and the weather scene too when `scene`;
+/// `lines(width, weather)` gives the lines around the digits for a width,
+/// the forecast's among them or not.
+///
+/// The scene takes the top right corner the clock leaves free, the clock
+/// stepping down a few rows if that makes room. Failing that the scene keeps
+/// the corner and the clock centers in the room left of it, the largest
+/// digits it can have there beside the largest scene that allows them, up to
+/// half the pane tall. Where the clock would lose its big digits, the scene
+/// stays away and the weather it stood for shows as text.
+fn plan<'a>(
+    texts: &[&'a str],
+    lines: &dyn Fn(u16, bool) -> Vec<Info>,
+    area: Rect,
+    scene: bool,
+    weather: bool,
+) -> Plan<'a> {
+    let rows = arrange(texts, &lines(area.width, weather), area);
+    if scene {
+        if let Some((rects, spot)) = settle(&rows, area) {
+            return Plan {
+                rows,
+                rects,
+                scene: Some(spot),
+            };
+        }
+        if let Some(plan) = beside(texts, lines, area, weather) {
+            return plan;
+        }
+    }
+    let rows = if scene && !weather {
+        arrange(texts, &lines(area.width, true), area)
+    } else {
+        rows
+    };
+    let rects = place(&rows, area, 0);
+    Plan {
+        rows,
+        rects,
+        scene: None,
+    }
+}
+
+/// The scene in the top right corner and the clock centered left of it,
+/// a column in from the left and two from the scene; `None` when no scene
+/// leaves the clock its big digits.
+fn beside<'a>(
+    texts: &[&'a str],
+    lines: &dyn Fn(u16, bool) -> Vec<Info>,
+    area: Rect,
+    weather: bool,
+) -> Option<Plan<'a>> {
+    let tallest = (area.height / 2).clamp(weather_fx::MIN_ROWS, weather_fx::MAX_ROWS);
+    let mut best: Option<(u16, Plan<'a>)> = None;
+    // The tallest scene first, so that it wins among equal digits.
+    for tall in (weather_fx::MIN_ROWS..=tallest).rev() {
+        let Some(spot) = spot(area, tall) else {
+            continue;
+        };
+        let left = Rect {
+            x: area.x + 1,
+            width: spot.x.saturating_sub(area.x + 3),
+            ..area
+        };
+        let rows = arrange(texts, &lines(left.width, weather), left);
+        let scale = rows.iter().find_map(|row| match row {
+            Row::Digits(_, scale) => Some(*scale),
+            _ => None,
+        });
+        if let Some(scale) = scale
+            && best.as_ref().is_none_or(|(best, _)| scale > *best)
+        {
+            let rects = place(&rows, left, 0);
+            let plan = Plan {
+                rows,
+                rects,
+                scene: Some(spot),
+            };
+            best = Some((scale, plan));
+        }
+    }
+    best.map(|(_, plan)| plan)
+}
+
+/// Where each row goes, stacked in the middle of `area` and `drop` rows
+/// lower: the rectangle the digits or the line take, centered. A gap, or a
+/// row past the bottom, takes none.
+fn place(rows: &[Row], area: Rect, drop: u16) -> Vec<Rect> {
+    let total: u16 = rows.iter().map(Row::height).sum();
+    let mut y = area.y + area.height.saturating_sub(total) / 2 + drop;
+    rows.iter()
+        .map(|row| {
+            let height = row.height();
+            let top = y;
+            y += height;
+            let width = match row {
+                _ if y > area.bottom() => return Rect::default(),
+                Row::Digits(text, scale) => clockface::size(text, *scale).0,
+                // A line too wide for the clock keeps the whole row, where
+                // it gets cut.
+                Row::Text(line) => u16::try_from(line.width())
+                    .ok()
+                    .filter(|&width| width <= area.width)
+                    .unwrap_or(area.width),
+                Row::Gap => return Rect::default(),
+            };
+            let x = area.x + area.width.saturating_sub(width) / 2;
+            Rect::new(x, top, width, height)
+        })
+        .collect()
+}
+
+/// The rows' places with the weather scene in the clock's top right corner,
+/// the clock stepping down as few rows as it takes to make room; `None`
+/// when that is not enough.
+fn settle(rows: &[Row], area: Rect) -> Option<(Vec<Rect>, Rect)> {
+    let total: u16 = rows.iter().map(Row::height).sum();
+    let spare = area.height.saturating_sub(total);
+    (0..=spare - spare / 2).find_map(|drop| {
+        let rects = place(rows, area, drop);
+        corner(&rects, area).map(|spot| (rects, spot))
+    })
+}
+
+/// Where the weather scene goes: the largest that fits in the top right
+/// corner of the clock, a cell clear of the digits and the lines; `None` when
+/// even the smallest would touch them.
+fn corner(taken: &[Rect], area: Rect) -> Option<Rect> {
+    (weather_fx::MIN_ROWS..=weather_fx::MAX_ROWS)
+        .rev()
+        .find_map(|rows| {
+            let spot = spot(area, rows)?;
+            let clear = Rect {
+                x: spot.x - 1,
+                width: spot.width + 1,
+                height: spot.height + 1,
+                ..spot
+            };
+            taken
+                .iter()
+                .all(|rect| !rect.intersects(clear))
+                .then_some(spot)
+        })
+}
+
+/// The weather scene `rows` tall in the top right corner of `area`, a cell
+/// in from its edges and with a cell to spare to its left and below; `None`
+/// when that does not fit.
+fn spot(area: Rect, rows: u16) -> Option<Rect> {
+    let width = weather_fx::width(rows);
+    let spot = Rect::new(
+        area.right().checked_sub(width + 1)?,
+        area.y + 1,
+        width,
+        rows,
+    );
+    (spot.x > area.x && spot.bottom() < area.bottom()).then_some(spot)
 }
 
 /// Big digits and as many info lines as fit, most important first; seconds are
 /// dropped before the digits shrink to plain text.
-fn arrange<'a>(texts: &[&'a str], infos: &'a [Info], area: Rect) -> Vec<Row<'a>> {
-    let rows = |shown: &'a [Info], middle: Row<'a>, gaps: bool| {
+fn arrange<'a>(texts: &[&'a str], infos: &[Info], area: Rect) -> Vec<Row<'a>> {
+    let rows = |shown: &[Info], middle: Row<'a>, gaps: bool| {
         let (above, below): (Vec<_>, Vec<_>) = shown.iter().partition(|info| info.above);
         let mut rows: Vec<Row> = above
             .iter()
@@ -277,12 +442,14 @@ fn arrange<'a>(texts: &[&'a str], infos: &'a [Info], area: Rect) -> Vec<Row<'a>>
     rows(&infos[..shown], Row::Text(Line::from(*text).bold()), false)
 }
 
+/// The lines around the digits; `weather` adds the forecast's.
 fn infos(
     app: &App,
     now: DateTime<Utc>,
     local: DateTime<FixedOffset>,
     width: u16,
     map_no_room: bool,
+    weather: bool,
 ) -> Vec<Info> {
     let text = app.lang.text();
     let palette = app.palette();
@@ -382,7 +549,9 @@ fn infos(
         });
     }
     infos.extend(event_line(app, now, width));
-    infos.extend(weather_lines(app, now, width));
+    if weather {
+        infos.extend(weather_lines(app, now, width));
+    }
     if map_no_room {
         infos.push(Info {
             line: Line::styled(text.map_no_room, dim),
@@ -445,10 +614,7 @@ fn event_line(app: &App, now: DateTime<Utc>, width: u16) -> Option<Info> {
 fn weather_lines(app: &App, now: DateTime<Utc>, width: u16) -> Vec<Info> {
     // The local time tab shows the weather of your city, once you pick it.
     let place = app.city().or(app.home);
-    let Some(slot) = place
-        .filter(|_| app.show_weather)
-        .and_then(|city| app.weather_of(&city))
-    else {
+    let Some(slot) = place.and_then(|city| app.weather_of(&city)) else {
         return Vec::new();
     };
     let text = app.lang.text();
@@ -1096,7 +1262,11 @@ mod tests {
 
     fn draw(app: &App, width: u16, height: u16, at: DateTime<Utc>) -> Buffer {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-        terminal.draw(|frame| render(frame, app, at)).unwrap();
+        terminal
+            .draw(|frame| {
+                render(frame, app, at);
+            })
+            .unwrap();
         terminal.backend().buffer().clone()
     }
 
@@ -1425,11 +1595,176 @@ mod tests {
     }
 
     #[test]
-    fn the_weather_key_hides_the_forecast() {
+    fn the_weather_key_cycles_through_info_still_live_and_off() {
+        use crate::weather_fx::Fx;
         let mut app = with_weather("Tokyo");
+        app.show_map = false;
+        // Info -> info with a still scene: the text stays.
+        app.on_key(KeyEvent::from(KeyCode::Char('w')), now());
+        let text = screen(&draw(&app, 100, 30, now()));
+        assert!(text.contains("Drizzle"), "{text}");
+        assert_eq!((app.show_weather, app.weather_fx), (true, Fx::Still));
+        // Still -> live scene on its own: the text goes away.
         app.on_key(KeyEvent::from(KeyCode::Char('w')), now());
         let text = screen(&draw(&app, 100, 30, now()));
         assert!(!text.contains("Drizzle"), "{text}");
+        assert_eq!((app.show_weather, app.weather_fx), (false, Fx::Live));
+        assert!(
+            text.contains(['╵', '╷']),
+            "the live scene drizzles:\n{text}"
+        );
+        // Live -> off, then back to info.
+        app.on_key(KeyEvent::from(KeyCode::Char('w')), now());
+        assert_eq!((app.show_weather, app.weather_fx), (false, Fx::Off));
+        app.on_key(KeyEvent::from(KeyCode::Char('w')), now());
+        let text = screen(&draw(&app, 100, 30, now()));
+        assert!(text.contains("Drizzle"), "{text}");
+    }
+
+    /// What `render_clock` puts where: `d` digits, `t` a line, `s` the scene.
+    fn laid_out(app: &App, area: Rect) -> Vec<(Rect, char)> {
+        let local = app.zone().local_time(now());
+        let full = local.format("%H:%M:%S").to_string();
+        let short = local.format("%H:%M").to_string();
+        let texts = [full.as_str(), short.as_str()];
+        let lines = |width, weather| infos(app, now(), local, width, false, weather);
+        let scene = app.fx_scene(now()).is_some();
+        let plan = plan(&texts, &lines, area, scene, app.show_weather);
+        let mut laid: Vec<(Rect, char)> = plan
+            .rows
+            .iter()
+            .zip(plan.rects)
+            .filter(|(_, rect)| !rect.is_empty())
+            .map(|(row, rect)| {
+                (
+                    rect,
+                    if matches!(row, Row::Digits(..)) {
+                        'd'
+                    } else {
+                        't'
+                    },
+                )
+            })
+            .collect();
+        laid.extend(plan.scene.map(|rect| (rect, 's')));
+        laid
+    }
+
+    #[test]
+    fn the_weather_scene_keeps_to_the_top_right_corner() {
+        use crate::weather_fx::{self, Fx};
+        let mut app = with_weather("Tokyo");
+        app.weather_fx = Fx::Still;
+        let mut shown = 0;
+        for width in (0..=260).step_by(7) {
+            for height in (0..=80).step_by(3) {
+                let area = Rect::new(3, 2, width, height);
+                let laid = laid_out(&app, area);
+                for (i, (rect, kind)) in laid.iter().enumerate() {
+                    assert!(
+                        area.union(*rect) == area,
+                        "{kind} {rect:?} outside {area:?}"
+                    );
+                    for (other, other_kind) in &laid[i + 1..] {
+                        assert!(
+                            !rect.intersects(*other),
+                            "{kind} {rect:?} over {other_kind} {other:?} in {area:?}"
+                        );
+                    }
+                }
+                if let Some((scene, _)) = laid.iter().find(|(_, kind)| *kind == 's') {
+                    shown += 1;
+                    assert_eq!((scene.right(), scene.y), (area.right() - 1, area.y + 1));
+                    assert!(
+                        (weather_fx::MIN_ROWS..=weather_fx::MAX_ROWS).contains(&scene.height),
+                        "{scene:?}"
+                    );
+                    assert_eq!(scene.width, weather_fx::width(scene.height));
+                }
+            }
+        }
+        assert!(
+            shown > 300,
+            "the scene shows wherever there is room: {shown}"
+        );
+    }
+
+    #[test]
+    fn roomy_panes_keep_the_clock_and_small_ones_share_it() {
+        use crate::weather_fx::Fx;
+        let mut app = with_weather("Tokyo");
+        let find = |laid: &[(Rect, char)], wanted| {
+            laid.iter()
+                .find(|(_, kind)| *kind == wanted)
+                .map(|(rect, _)| *rect)
+        };
+        // With room to spare the clock keeps its size, at most stepping down.
+        for (width, height) in [(120, 40), (86, 26), (60, 20), (200, 50)] {
+            let area = Rect::new(0, 0, width, height);
+            app.weather_fx = Fx::Off;
+            let alone = laid_out(&app, area);
+            app.weather_fx = Fx::Still;
+            let laid = laid_out(&app, area);
+            let clock: Vec<_> = laid.iter().filter(|(_, kind)| *kind != 's').collect();
+            assert_eq!(clock.len(), alone.len(), "{width}x{height}");
+            let drop = clock[0].0.y - alone[0].0.y;
+            for ((rect, _), (before, _)) in clock.iter().zip(&alone) {
+                let (x, y, w, h) = (before.x, before.y + drop, before.width, before.height);
+                assert_eq!(*rect, Rect::new(x, y, w, h), "{width}x{height}");
+            }
+            assert!(find(&laid, 's').is_some(), "{width}x{height}");
+        }
+        let laid = laid_out(&app, Rect::new(0, 0, 120, 40));
+        assert_eq!(find(&laid, 's'), Some(Rect::new(101, 1, 18, 8)));
+        // A small pane gives the scene a column at the right, and the clock
+        // centers in the rest, keeping big digits.
+        for (width, height) in [(86, 13), (43, 12)] {
+            let laid = laid_out(&app, Rect::new(0, 0, width, height));
+            let scene = find(&laid, 's').expect("a scene");
+            assert_eq!((scene.right(), scene.y), (width - 1, 1));
+            assert!(find(&laid, 'd').is_some(), "{width}x{height}");
+            for (rect, kind) in &laid {
+                assert!(
+                    *kind == 's' || rect.right() + 2 <= scene.x,
+                    "{kind} {rect:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn without_room_the_live_scene_shows_as_text() {
+        use crate::weather_fx::Fx;
+        let mut app = with_weather("Tokyo");
+        app.show_map = false;
+        let as_text = screen(&draw(&app, 30, 8, now()));
+        assert!(as_text.contains("21°C"), "{as_text}");
+        app.cycle_weather();
+        app.cycle_weather();
+        assert_eq!((app.show_weather, app.weather_fx), (false, Fx::Live));
+        assert_eq!(screen(&draw(&app, 30, 8, now())), as_text);
+        let roomy = screen(&draw(&app, 100, 30, now()));
+        assert!(!roomy.contains("21°C"), "the scene stands for it:\n{roomy}");
+    }
+
+    #[test]
+    fn a_live_scene_on_screen_sets_the_pace() {
+        use crate::weather_fx::Fx;
+        let pace = |fx, width, height| {
+            let mut app = with_weather("Tokyo");
+            app.show_map = false;
+            app.weather_fx = fx;
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            let mut animation = None;
+            terminal
+                .draw(|frame| animation = render(frame, &app, now()))
+                .unwrap();
+            animation
+        };
+        assert_eq!(pace(Fx::Live, 100, 30), Some(125), "drizzle");
+        assert_eq!(pace(Fx::Still, 100, 30), None);
+        assert_eq!(pace(Fx::Off, 100, 30), None);
+        assert_eq!(pace(Fx::Live, 30, 8), None, "not on screen");
     }
 
     #[test]

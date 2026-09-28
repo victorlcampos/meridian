@@ -99,8 +99,14 @@ you pick.
   through the list shows each one at once; type to filter.
 - **Weather.** City tabs show the weather now, when rain is likely and the
   next hours' temperature and chance of rain. In local time, `w` asks for
-  your city first; after that `w` shows or hides the weather and `W`
-  changes the city.
+  your city first; after that `w` cycles text, a still scene, a live scene
+  and off, and `W` changes the city. The scene is a small pixel-art sky in
+  the theme's colors: the sun, or the moon in tonight's phase (upside down
+  south of the equator), clouds, drizzle, rain, sleet, snow, fog and
+  lightning. It sits in the top right corner, in room the clock leaves
+  free; a small pane makes room for it beside the clock, and only where
+  that would cost the big digits does the live scene give way to the
+  weather as text.
 - **Calendar.** `g` connects the Mac Calendar (every account in the macOS
   Calendar app, Google included) or any iCal feed. The next event shows under
   the clock, and a reminder rings 5 minutes before it.
@@ -155,7 +161,7 @@ saved too. Run `meridian --help` for every option.
 | `m` | Show or hide the map, on every tab |
 | `v` | Map style: ASCII, braille, blocks (brings a hidden map up first) |
 | `t` | Clock theme |
-| `w` | Show or hide the weather (in local time, pick your city first) |
+| `w` | Cycle the weather: text, still scene, live scene, off (in local time, pick your city first) |
 | `W` | Change your city, for the weather in local time |
 | `g` | Calendar |
 | `a` | Alarms |
@@ -290,7 +296,9 @@ daí as abas passam a ser as suas cidades, `←` `→` trocam de cidade e `x` fe
 uma (fechar a última volta à hora local). O
 mapa-múndi em ASCII marca a cidade da aba e sombreia o lado da noite (na hora
 local, marca a sua cidade), e a previsão do tempo cobre as próximas horas (`w`
-esconde). `m` mostra ou esconde o mapa em todas as abas de uma vez.
+cicla texto, cena fixa, cena animada e desligado: um céu em pixel art com sol,
+lua na fase da noite, nuvens, garoa, chuva, neve, neblina ou raios, no canto
+superior direito; num painel pequeno o relógio abre espaço ao lado dela). `m` mostra ou esconde o mapa em todas as abas de uma vez.
 `v` troca o estilo do mapa e `t` o tema do relógio, entre 50 temas de editores
 (Tokyo Night, Dracula, Catppuccin, Gruvbox…). Na hora local, `w` pergunta
 sua cidade uma vez e passa a mostrar a previsão dela (`W` troca a cidade). `g` conecta o Calendário do Mac, com todas as contas do app

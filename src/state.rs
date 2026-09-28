@@ -18,6 +18,12 @@ pub struct State {
     pub map_style: String,
     pub seconds: bool,
     pub weather: bool,
+    /// The weather scene in the clock's corner.
+    #[serde(default)]
+    pub weather_fx: bool,
+    /// The weather scene moves; absent in older files, which always animated.
+    #[serde(default = "fx_live_on")]
+    pub weather_fx_live: bool,
     /// City of the local time tab, for its weather.
     pub home: Option<SavedCity>,
     /// Secret iCal address (or .ics file) of the calendar.
@@ -47,6 +53,8 @@ impl Default for State {
             map_style: String::new(),
             seconds: true,
             weather: true,
+            weather_fx: false,
+            weather_fx_live: true,
             home: None,
             calendar: None,
             mac_calendar: false,
@@ -59,6 +67,11 @@ impl Default for State {
             alarms: Vec::new(),
         }
     }
+}
+
+/// Older state files predate the still weather scene: theirs moved.
+fn fx_live_on() -> bool {
+    true
 }
 
 impl State {

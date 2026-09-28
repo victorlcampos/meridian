@@ -115,6 +115,38 @@ pub struct Palette {
     pub sun: Color,
     /// Chance of rain in the forecast.
     pub rain: Color,
+    /// The weather scene's colors.
+    pub sky: SkyColors,
+}
+
+/// The colors the weather scene shades and blends, as `0xRRGGBB`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SkyColors {
+    /// The screen's background, which soft edges and glows fade into;
+    /// `None` for the terminal's own, whose color is unknown.
+    pub bg: Option<u32>,
+    /// The lighter and the darker of the text and the background: every
+    /// gray of the scene lies between them.
+    pub light: u32,
+    pub dark: u32,
+    pub sun: u32,
+    /// The sun's warm edge.
+    pub orange: u32,
+    pub rain: u32,
+    truecolor: bool,
+}
+
+impl SkyColors {
+    /// `rgb` as the terminal shows it.
+    pub fn color(&self, rgb: u32) -> Color {
+        to_color(rgb, self.truecolor)
+    }
+
+    /// Whether the scene can blend its edges into the background: it has to
+    /// know its color and show it exactly, in 24-bit color.
+    pub fn soft(&self) -> bool {
+        self.truecolor && self.bg.is_some()
+    }
 }
 
 impl Palette {
@@ -171,15 +203,23 @@ impl Theme {
                 marker: Color::Red,
                 sun: Color::Yellow,
                 rain: Color::Blue,
+                // Mid tones that show on dark and light backgrounds alike.
+                sky: SkyColors {
+                    bg: None,
+                    light: 0xe8ebf0,
+                    dark: 0x3c414c,
+                    sun: 0xffc53d,
+                    orange: 0xff8a3d,
+                    rain: 0x5aa8ff,
+                    truecolor,
+                },
             };
         };
-        let color = |rgb: u32| {
-            if truecolor {
-                let [_, r, g, b] = rgb.to_be_bytes();
-                Color::Rgb(r, g, b)
-            } else {
-                Color::Indexed(ansi256(rgb))
-            }
+        let color = |rgb: u32| to_color(rgb, truecolor);
+        let (light, dark) = if luminance(fg) >= luminance(bg) {
+            (fg, bg)
+        } else {
+            (bg, fg)
         };
         let slot = |slot: Slot| match slot {
             Red => red,
@@ -203,8 +243,33 @@ impl Theme {
             marker: color(red),
             sun: color(yellow),
             rain: color(blue),
+            sky: SkyColors {
+                bg: Some(bg),
+                light,
+                dark,
+                sun: yellow,
+                orange,
+                rain: blue,
+                truecolor,
+            },
         }
     }
+}
+
+/// `rgb` in 24-bit color, or else the nearest of the 256-color palette.
+fn to_color(rgb: u32, truecolor: bool) -> Color {
+    if truecolor {
+        let [_, r, g, b] = rgb.to_be_bytes();
+        Color::Rgb(r, g, b)
+    } else {
+        Color::Indexed(ansi256(rgb))
+    }
+}
+
+/// How bright a color looks, from 0 to 255.
+fn luminance(rgb: u32) -> f64 {
+    let [_, r, g, b] = rgb.to_be_bytes().map(f64::from);
+    0.2126 * r + 0.7152 * g + 0.0722 * b
 }
 
 /// The theme called `name`, ignoring case, accents, spaces and punctuation

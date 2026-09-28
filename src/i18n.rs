@@ -174,7 +174,8 @@ const EN: Text = Text {
         ("a", "alarms, in the zone of this tab"),
         ("v", "map style: ASCII, braille, blocks"),
         ("t", "clock theme: 50 editor themes"),
-        ("w  W", "show or hide the weather; W sets your city"),
+        ("w", "weather: text, still scene, live scene, off"),
+        ("W", "your city, for the weather in local time"),
         ("g", "calendar: Mac Calendar or iCal, reminder 5 min before"),
         ("s", "show or hide seconds"),
         ("q  Ctrl+C", "quit"),
@@ -316,10 +317,8 @@ const PT: Text = Text {
         ("a", "alarmes, no fuso desta aba"),
         ("v", "estilo do mapa: ASCII, braille, blocos"),
         ("t", "tema do relógio: 50 temas de editores"),
-        (
-            "w  W",
-            "mostrar ou esconder a previsão; W define sua cidade",
-        ),
+        ("w", "tempo: texto, cena fixa, cena animada, desligado"),
+        ("W", "sua cidade, para o tempo na hora local"),
         (
             "g",
             "agenda: Calendário do Mac ou iCal, lembrete 5 min antes",

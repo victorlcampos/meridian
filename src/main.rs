@@ -13,6 +13,7 @@ mod state;
 mod theme;
 mod ui;
 mod weather;
+mod weather_fx;
 mod worldmap;
 mod zone;
 
@@ -195,8 +196,9 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App, store: &mut Option<Store>)
             io::stdout().write_all(b"\x07")?;
             io::stdout().flush()?;
         }
-        terminal.draw(|frame| ui::render(frame, app, now))?;
-        if event::poll(app.next_wakeup(now))?
+        let mut animation = None;
+        terminal.draw(|frame| animation = ui::render(frame, app, now))?;
+        if event::poll(app.next_wakeup(now, animation))?
             && let Event::Key(key) = event::read()?
             && key.kind == KeyEventKind::Press
         {

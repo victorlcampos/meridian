@@ -13,9 +13,11 @@ use crate::cities::{self, City, fold};
 use crate::i18n::Lang;
 use crate::maccal::{self, Access};
 use crate::net::{Answer, Net};
+use crate::solar::{self, Light};
 use crate::state::{SavedAlarm, SavedCity, State};
 use crate::theme::{self, Palette, THEMES};
 use crate::weather::{self, Forecast};
+use crate::weather_fx::{Fx, Scene};
 use crate::worldmap::MapStyle;
 use crate::zone::Zone;
 
@@ -249,6 +251,8 @@ pub struct App {
     /// The last attempt to save the state failed.
     pub unsaved: bool,
     pub show_weather: bool,
+    /// The weather scene in the clock's corner: off, one still frame, or animated.
+    pub weather_fx: Fx,
     /// Where the local time tab is, for its weather.
     pub home: Option<City>,
     /// Forecasts by `weather::key`.
@@ -280,6 +284,7 @@ impl App {
             digits_color: None,
             unsaved: false,
             show_weather: true,
+            weather_fx: Fx::Off,
             home: None,
             weather: HashMap::new(),
             net: None,
@@ -317,6 +322,8 @@ impl App {
                 .unwrap_or_default(),
             seconds: self.show_seconds,
             weather: self.show_weather,
+            weather_fx: self.weather_fx != Fx::Off,
+            weather_fx_live: self.weather_fx == Fx::Live,
             home: self.home.map(|city| SavedCity {
                 name: city.name.to_owned(),
                 region: city.region.to_owned(),
@@ -381,6 +388,11 @@ impl App {
         self.show_map = state.shows_map();
         self.show_seconds = state.seconds;
         self.show_weather = state.weather;
+        self.weather_fx = match (state.weather_fx, state.weather_fx_live) {
+            (true, true) => Fx::Live,
+            (true, false) => Fx::Still,
+            (false, _) => Fx::Off,
+        };
         self.home = state
             .home
             .as_ref()
@@ -529,6 +541,31 @@ impl App {
         self.weather.get(&weather::key(city))
     }
 
+    /// The weather scene to paint, when it is on and the forecast of the tab
+    /// on screen (or of your city, in local time) is in. Once the sun sets
+    /// the moon, in its phase, takes its place.
+    pub fn fx_scene(&self, now: DateTime<Utc>) -> Option<Scene> {
+        if self.weather_fx == Fx::Off {
+            return None;
+        }
+        let place = self.city().or(self.home)?;
+        let code = self.weather_of(&place)?.forecast.as_ref()?.code;
+        let sun = solar::subsolar_point(now);
+        let night = solar::light(sun, place.lat, place.lon) != Light::Day;
+        Scene::new(code, night, place.lat < 0.0, self.weather_fx == Fx::Live)
+    }
+
+    /// `w` cycles the weather: info, info with a still scene, a live scene
+    /// on its own, off.
+    pub fn cycle_weather(&mut self) {
+        (self.show_weather, self.weather_fx) = match (self.show_weather, self.weather_fx) {
+            (true, Fx::Off) => (true, Fx::Still),
+            (true, Fx::Still) => (false, Fx::Live),
+            (false, Fx::Live) => (false, Fx::Off),
+            _ => (true, Fx::Off),
+        };
+    }
+
     /// The forecast of a city, once downloaded.
     #[cfg(test)]
     pub fn forecast(&self, city: &City) -> Option<&Forecast> {
@@ -621,7 +658,7 @@ impl App {
                 calendar.asked = Some(now);
             }
         }
-        if !self.show_weather {
+        if !self.show_weather && self.weather_fx == Fx::Off {
             return;
         }
         for city in self.tabs.iter().filter_map(|tab| tab.city).chain(self.home) {
@@ -700,11 +737,13 @@ impl App {
     }
 
     /// How long to wait for a key before the screen needs redrawing: until the
-    /// next second, or the next blink while an alarm rings.
-    pub fn next_wakeup(&self, now: DateTime<Utc>) -> std::time::Duration {
-        let period = if self.ringing.is_empty() { 1000 } else { 500 };
-        let elapsed = now.timestamp_subsec_millis() % period;
-        std::time::Duration::from_millis(u64::from(period - elapsed) + 5)
+    /// next second, the next blink while an alarm rings, or the next frame of
+    /// an animation on screen that changes every `frame` milliseconds.
+    pub fn next_wakeup(&self, now: DateTime<Utc>, frame: Option<u64>) -> std::time::Duration {
+        let until = |period: u64| period - now.timestamp_millis().rem_euclid(period as i64) as u64;
+        let tick = until(if self.ringing.is_empty() { 1000 } else { 500 });
+        let wait = frame.map_or(tick, |frame| tick.min(until(frame)));
+        std::time::Duration::from_millis(wait + 5)
     }
 
     pub fn on_key(&mut self, key: KeyEvent, now: DateTime<Utc>) {
@@ -784,7 +823,7 @@ impl App {
             'w' if self.active == 0 && self.home.is_none() => {
                 return Mode::Search(Search::home(self));
             }
-            'w' => self.show_weather = !self.show_weather,
+            'w' => self.cycle_weather(),
             '?' | 'h' => return Mode::Help,
             _ => {}
         }
@@ -1372,10 +1411,21 @@ mod tests {
     fn wakes_up_on_the_next_second_or_blink() {
         let mut app = app();
         let at = now() + Duration::milliseconds(300);
-        assert_eq!(app.next_wakeup(at).as_millis(), 705);
+        assert_eq!(app.next_wakeup(at, None).as_millis(), 705);
+        let rain = now() + Duration::milliseconds(330);
+        assert_eq!(
+            app.next_wakeup(rain, Some(100)).as_millis(),
+            75,
+            "next frame"
+        );
         app.add_alarm(When::In(Duration::seconds(1)), String::new(), now());
         app.tick(now() + Duration::seconds(1));
-        assert_eq!(app.next_wakeup(at).as_millis(), 205);
+        assert_eq!(app.next_wakeup(at, None).as_millis(), 205);
+        assert_eq!(
+            app.next_wakeup(at, Some(1_000)).as_millis(),
+            205,
+            "a slow animation never holds up the blink"
+        );
     }
 
     fn theme_name(app: &App) -> &'static str {
@@ -1796,7 +1846,29 @@ mod tests {
         assert!(app.show_weather && app.tabs.len() == 1, "no tab is opened");
 
         press(&mut app, KeyCode::Char('w'));
-        assert!(!app.show_weather, "then w switches the weather off and on");
+        assert_eq!(
+            (app.show_weather, app.weather_fx),
+            (true, Fx::Still),
+            "then w cycles info -> info with a still scene"
+        );
+        press(&mut app, KeyCode::Char('w'));
+        assert_eq!(
+            (app.show_weather, app.weather_fx),
+            (false, Fx::Live),
+            "then a live scene on its own"
+        );
+        press(&mut app, KeyCode::Char('w'));
+        assert_eq!(
+            (app.show_weather, app.weather_fx),
+            (false, Fx::Off),
+            "then off"
+        );
+        press(&mut app, KeyCode::Char('w'));
+        assert_eq!(
+            (app.show_weather, app.weather_fx),
+            (true, Fx::Off),
+            "then back to info"
+        );
         press(&mut app, KeyCode::Char('W'));
         assert!(
             matches!(&app.mode, Mode::Search(search) if search.home && search.query == "Belo Horizonte")
