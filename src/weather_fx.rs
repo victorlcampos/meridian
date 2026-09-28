@@ -579,6 +579,24 @@ impl Canvas {
 /// rays that take turns reaching out.
 fn sun(canvas: &mut Canvas, tones: &Tones, center: (f64, f64), r: f64, rays: bool, t: f64) {
     let ((cx, cy), r) = on_grid(center, r);
+    // A pixel of sky between the disc and the rays, which reach out a pixel
+    // or two, the straight ones and the slanted ones in turn. At their
+    // longest they must stay on the canvas on every side, or a cut ray would
+    // lose the sun its symmetry: when they would not, the disc gives up a
+    // ring of pixels, then, down to three pixels across, the pixel of sky.
+    let (w, h) = (canvas.width as f64, canvas.height as f64);
+    let room = (cx.min(cy).min(w - cx).min(h - cy) - 0.5).floor();
+    let long = (0.55 * r).round().max(1.0);
+    let (mut disc, mut gap) = (r - 0.5, 1.0);
+    if rays {
+        while disc > 1.0 && disc + gap + long + 1.0 > room {
+            disc -= 1.0;
+        }
+        if disc + gap + long + 1.0 > room {
+            gap = 0.0;
+        }
+    }
+    let r = disc + 0.5;
     canvas.glow(
         (cx, cy),
         r,
@@ -587,25 +605,15 @@ fn sun(canvas: &mut Canvas, tones: &Tones, center: (f64, f64), r: f64, rays: boo
         if rays { 0.3 } else { 0.2 },
     );
     if rays {
-        // A pixel of sky between the disc and the rays, which reach out a
-        // pixel or two, the straight ones and the slanted ones in turn. None
-        // goes past the nearest edge, or a cut ray would lose the sun its
-        // symmetry: without room to grow outward, rays grow inward instead,
-        // toward the disc.
         let pulse = (t * TAU / 3.0).sin();
-        let start = r + 1.0;
-        let (w, h) = (canvas.width as f64, canvas.height as f64);
-        let edge = cx.min(cy).min(w - cx).min(h - cy);
-        let long = (0.55 * r).round().max(1.0);
+        let start = r + gap;
         for k in 0..8 {
             let turn = if k % 2 == 0 { pulse } else { -pulse };
             let reach = (long + 0.5 * turn).max(1.0);
-            let end = (start + reach).min(edge);
-            let begin = (end - reach).max(r);
             let (dy, dx) = (f64::from(k) * TAU / 8.0).sin_cos();
             let ray = [
-                (cx + dx * begin, cy + dy * begin),
-                (cx + dx * end, cy + dy * end),
+                (cx + dx * start, cy + dy * start),
+                (cx + dx * (start + reach), cy + dy * (start + reach)),
             ];
             canvas.stroke(&ray, 0.5, tones.sun);
         }
