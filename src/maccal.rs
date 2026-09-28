@@ -49,6 +49,9 @@ struct Raw {
     all_day: bool,
     cancelled: bool,
     declined: bool,
+    /// Found by the helper, so the notes it comes from stay there.
+    #[serde(default)]
+    link: Option<String>,
 }
 
 /// What the helper prints.
@@ -72,6 +75,7 @@ fn keep(raw: Raw) -> Option<Event> {
         uid: raw.id,
         title: raw.title,
         start,
+        link: raw.link,
     })
 }
 
@@ -255,6 +259,7 @@ mod eventkit {
     use objc2_foundation::{NSDate, NSError};
 
     use super::{Access, Raw, Reply};
+    use crate::calendar;
 
     /// Asks for access first when `ask` and it never was, then reads.
     pub fn read(ask: bool, from: f64, until: f64) -> Reply {
@@ -338,6 +343,16 @@ mod eventkit {
                             .or_else(|| event.eventIdentifier())
                             .map(|id| id.to_string())
                             .unwrap_or_default();
+                        // Where the Calendar app finds the call its Join button opens.
+                        let fields: Vec<String> = [
+                            event.URL().and_then(|url| url.absoluteString()),
+                            event.location(),
+                            event.notes(),
+                        ]
+                        .into_iter()
+                        .flatten()
+                        .map(|text| text.to_string())
+                        .collect();
                         Raw {
                             id,
                             title: event.title().to_string(),
@@ -345,6 +360,7 @@ mod eventkit {
                             all_day: event.isAllDay(),
                             cancelled: event.status() == EKEventStatus::Canceled,
                             declined,
+                            link: calendar::find_link(fields.iter().map(String::as_str)),
                         }
                     })
                     .collect()
@@ -365,6 +381,7 @@ mod tests {
             all_day: false,
             cancelled: false,
             declined: false,
+            link: None,
         }
     }
 
@@ -410,7 +427,10 @@ mod tests {
                     start: 1_790_359_200.0,
                     ..raw("Later")
                 },
-                raw("Sooner"),
+                Raw {
+                    link: Some("https://meet.google.com/abc-defg-hij".into()),
+                    ..raw("Sooner")
+                },
                 Raw {
                     all_day: true,
                     ..raw("Holiday")
@@ -425,6 +445,11 @@ mod tests {
         let events = parse_reply(&text, at(1_790_000_000), at(1_791_000_000)).unwrap();
         let titles: Vec<_> = events.iter().map(|event| event.title.as_str()).collect();
         assert_eq!(titles, ["Sooner", "Later"]);
+        assert_eq!(
+            events[0].link.as_deref(),
+            Some("https://meet.google.com/abc-defg-hij")
+        );
+        assert_eq!(events[1].link, None);
     }
 
     #[test]

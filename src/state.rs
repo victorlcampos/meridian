@@ -123,6 +123,9 @@ pub struct SavedAlarm {
     /// When it rings next; absent while switched off.
     #[serde(default)]
     pub next: Option<DateTime<Utc>>,
+    /// Link of the event a snoozed reminder is for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link: Option<String>,
 }
 
 /// `$XDG_CONFIG_HOME/meridian/state.json`, or `~/.config/...`, or `%APPDATA%\...`.

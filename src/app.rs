@@ -24,6 +24,8 @@ use crate::zone::Zone;
 const SNOOZE_MINUTES: i64 = 5;
 const SEARCH_RESULTS: usize = 100;
 const PAGE: usize = 10;
+/// Events listed in the calendar pop-up.
+const LISTED_EVENTS: usize = 10;
 
 pub enum Mode {
     Clock,
@@ -61,8 +63,9 @@ pub enum CalendarPanel {
     Choose(usize),
     /// Typing an iCal address.
     Address(String),
-    /// Connected: the source, the reminder and the next events.
-    Status,
+    /// Connected: the source, the reminder and the next events, one of them
+    /// picked to open its link.
+    Status(usize),
 }
 
 /// The calendar feed, its next events and the reminders already rung.
@@ -109,6 +112,14 @@ impl CalendarSlot {
     /// The next event that has not started yet.
     pub fn next(&self, now: DateTime<Utc>) -> Option<&Event> {
         self.events.iter().find(|event| event.start > now)
+    }
+
+    /// The events the pop-up lists: the next ones that have not started yet.
+    pub fn listed(&self, now: DateTime<Utc>) -> impl Iterator<Item = &Event> {
+        self.events
+            .iter()
+            .filter(move |event| event.start > now)
+            .take(LISTED_EVENTS)
     }
 
     pub fn connected(&self) -> bool {
@@ -369,6 +380,7 @@ impl App {
                     daily: alarm.daily,
                     timer: alarm.timer,
                     next: alarm.next,
+                    link: alarm.link.clone(),
                 })
                 .collect(),
         }
@@ -440,6 +452,7 @@ impl App {
                 daily: saved.daily,
                 timer: saved.timer,
                 next: saved.next,
+                link: saved.link.clone(),
             });
         }
     }
@@ -704,6 +717,7 @@ impl App {
                     daily: false,
                     timer: true,
                     next: None,
+                    link: event.link.clone(),
                 });
             }
         }
@@ -736,6 +750,11 @@ impl App {
         !self.ringing.is_empty() && now.timestamp_subsec_millis() < 500
     }
 
+    /// The link of the first reminder ringing that has one, for `o` to open.
+    pub fn ringing_link(&self) -> Option<&str> {
+        self.ringing.iter().find_map(|alarm| alarm.link.as_deref())
+    }
+
     /// How long to wait for a key before the screen needs redrawing: until the
     /// next second, the next blink while an alarm rings, or the next frame of
     /// an animation on screen that changes every `frame` milliseconds.
@@ -753,8 +772,14 @@ impl App {
             return;
         }
         if !self.ringing.is_empty() {
-            if key.code == KeyCode::Char('z') {
-                self.snooze(now);
+            match key.code {
+                KeyCode::Char('z') => self.snooze(now),
+                KeyCode::Char('o') => {
+                    if let Some(link) = self.ringing_link() {
+                        (self.open)(link);
+                    }
+                }
+                _ => {}
             }
             self.ringing.clear();
             return;
@@ -806,7 +831,7 @@ impl App {
             't' => return Mode::Themes(ThemePicker::new(self.theme)),
             'g' => {
                 return Mode::Calendar(match self.calendar.connected() {
-                    true => CalendarPanel::Status,
+                    true => CalendarPanel::Status(0),
                     false => CalendarPanel::Choose(0),
                 });
             }
@@ -894,7 +919,7 @@ impl App {
                     KeyCode::Enter => match sources[selected] {
                         CalendarSource::Mac => {
                             self.connect_mac(now);
-                            CalendarPanel::Status
+                            CalendarPanel::Status(0)
                         }
                         CalendarSource::Ical => CalendarPanel::Address(String::new()),
                     },
@@ -902,7 +927,7 @@ impl App {
                 }
             }
             CalendarPanel::Address(mut input) => match key.code {
-                KeyCode::Esc if self.calendar.connected() => CalendarPanel::Status,
+                KeyCode::Esc if self.calendar.connected() => CalendarPanel::Status(0),
                 KeyCode::Esc => CalendarPanel::Choose(0),
                 KeyCode::Enter => {
                     let address = input.trim().to_owned();
@@ -910,7 +935,7 @@ impl App {
                         CalendarPanel::Choose(0)
                     } else {
                         self.set_calendar(Some(address));
-                        CalendarPanel::Status
+                        CalendarPanel::Status(0)
                     }
                 }
                 KeyCode::Backspace => {
@@ -924,11 +949,16 @@ impl App {
                 }
                 _ => CalendarPanel::Address(input),
             },
-            CalendarPanel::Status => {
+            CalendarPanel::Status(selected) => {
                 let reminder = self.calendar.reminder;
                 let mac = self.calendar.mac;
+                // Events drop out of the list as they start.
+                let last = self.calendar.listed(now).count().saturating_sub(1);
+                let mut selected = selected.min(last);
                 match key.code {
                     KeyCode::Esc | KeyCode::Char('q' | 'g') => return Mode::Clock,
+                    KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
+                    KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1).min(last),
                     KeyCode::Char('e') if !mac => {
                         return Mode::Calendar(CalendarPanel::Address(
                             self.calendar.address.clone().unwrap_or_default(),
@@ -946,6 +976,13 @@ impl App {
                     {
                         self.ask_mac_access(now);
                     }
+                    KeyCode::Enter => {
+                        let picked = self.calendar.listed(now).nth(selected);
+                        if let Some(link) = picked.and_then(|event| event.link.as_deref()) {
+                            (self.open)(link);
+                            return Mode::Clock;
+                        }
+                    }
                     KeyCode::Char('r') => self.calendar.asked = None,
                     KeyCode::Char('o') if mac => {
                         (self.open)(maccal::PRIVACY_SETTINGS);
@@ -959,7 +996,7 @@ impl App {
                     }
                     _ => {}
                 }
-                CalendarPanel::Status
+                CalendarPanel::Status(selected)
             }
         };
         Mode::Calendar(panel)
@@ -1067,7 +1104,8 @@ impl App {
             .unwrap_or_default()
     }
 
-    /// Rings every ringing alarm again in five minutes.
+    /// Rings every ringing alarm again in five minutes, a reminder still with
+    /// its event's link.
     fn snooze(&mut self, now: DateTime<Utc>) {
         let word = self.lang.text().snooze;
         for alarm in std::mem::take(&mut self.ringing) {
@@ -1076,13 +1114,14 @@ impl App {
                 label if label == word || label.ends_with(&format!("({word})")) => alarm.label,
                 label => format!("{label} ({word})"),
             };
-            self.alarms.add(
+            let id = self.alarms.add(
                 When::In(Duration::minutes(SNOOZE_MINUTES)),
                 label,
                 alarm.zone,
                 alarm.place,
                 now,
             );
+            self.alarms.set_link(id, alarm.link);
         }
     }
 }
@@ -1733,6 +1772,96 @@ mod tests {
         opened
     }
 
+    const MEET: &str = "https://meet.google.com/abc-defg-hij";
+    const ZOOM: &str = "https://acme.zoom.us/j/81234567890";
+
+    /// A call at 12:30, lunch at 13:00 and a Zoom at 13:30, with the links
+    /// the app opens recorded.
+    fn with_meetings() -> (App, Arc<Mutex<Vec<String>>>) {
+        let mut app = app();
+        let opened = record_opened(&mut app);
+        app.set_calendar(Some("https://calendar.example/basic.ics".into()));
+        let event = |title: &str, minutes, link: Option<&str>| Event {
+            uid: title.to_lowercase(),
+            title: title.into(),
+            start: now() + Duration::minutes(minutes),
+            link: link.map(str::to_owned),
+        };
+        app.calendar.events = vec![
+            event("Review", 30, Some(MEET)),
+            event("Lunch", 60, None),
+            event("Retro", 90, Some(ZOOM)),
+        ];
+        (app, opened)
+    }
+
+    #[test]
+    fn o_opens_the_link_of_the_event_ringing() {
+        let (mut app, opened) = with_meetings();
+        app.tick(now() + Duration::minutes(25));
+        assert_eq!(app.ringing_link(), Some(MEET));
+        press(&mut app, KeyCode::Char('o'));
+        assert!(app.ringing.is_empty(), "and stops it");
+        assert_eq!(*opened.lock().unwrap(), [MEET]);
+    }
+
+    #[test]
+    fn other_keys_stop_a_reminder_without_opening_its_link() {
+        let (mut app, opened) = with_meetings();
+        app.tick(now() + Duration::minutes(25));
+        press(&mut app, KeyCode::Enter);
+        assert!(app.ringing.is_empty());
+        assert!(opened.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_snoozed_reminder_keeps_its_link() {
+        let (mut app, opened) = with_meetings();
+        let reminder = now() + Duration::minutes(25);
+        app.tick(reminder);
+        app.on_key(KeyEvent::from(KeyCode::Char('z')), reminder);
+        let mut copy = self::app();
+        copy.restore(&app.state(), true);
+        assert_eq!(copy.alarms.list()[0].link.as_deref(), Some(MEET), "saved");
+
+        app.tick(now() + Duration::minutes(30));
+        assert_eq!(app.ringing[0].label, "Review (snooze)");
+        press(&mut app, KeyCode::Char('o'));
+        assert_eq!(*opened.lock().unwrap(), [MEET]);
+    }
+
+    #[test]
+    fn enter_opens_the_link_of_the_event_picked_in_the_calendar() {
+        let (mut app, opened) = with_meetings();
+        press(&mut app, KeyCode::Char('g'));
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.mode, Mode::Clock), "then back to the clock");
+
+        press(&mut app, KeyCode::Char('g'));
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Enter);
+        assert!(
+            matches!(app.mode, Mode::Calendar(CalendarPanel::Status(1))),
+            "lunch has no link"
+        );
+        press(&mut app, KeyCode::Char('j'));
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(*opened.lock().unwrap(), [MEET, ZOOM]);
+    }
+
+    #[test]
+    fn the_pick_stays_within_the_list_as_events_start() {
+        let (mut app, opened) = with_meetings();
+        app.mode = Mode::Calendar(CalendarPanel::Status(1));
+        // Review and Lunch have started: Retro is left.
+        app.on_key(
+            KeyEvent::from(KeyCode::Enter),
+            now() + Duration::minutes(61),
+        );
+        assert_eq!(*opened.lock().unwrap(), [ZOOM]);
+    }
+
     #[cfg(target_os = "macos")]
     #[test]
     fn connects_the_mac_calendar_asking_for_access_once() {
@@ -1741,7 +1870,7 @@ mod tests {
         app.net = Some(net);
         press(&mut app, KeyCode::Char('g'));
         press(&mut app, KeyCode::Enter);
-        assert!(matches!(app.mode, Mode::Calendar(CalendarPanel::Status)));
+        assert!(matches!(app.mode, Mode::Calendar(CalendarPanel::Status(0))));
         assert!(app.calendar.mac && app.calendar.asking);
         assert!(app.state().mac_calendar);
         let (key, job) = jobs.try_recv().unwrap();
@@ -1751,6 +1880,7 @@ mod tests {
             uid: "1".into(),
             title: "Review".into(),
             start: now() + Duration::minutes(40),
+            link: None,
         };
         answers
             .send((key, Answer::MacCalendar(Ok(vec![review]))))

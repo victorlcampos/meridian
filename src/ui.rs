@@ -69,7 +69,7 @@ pub fn render(frame: &mut Frame, app: &App, now: DateTime<Utc>) -> Option<u64> {
         .render(map, buf);
     }
     if let Some(footer) = screen.footer {
-        render_keys(app, footer, buf);
+        render_keys(app, now, footer, buf);
     }
     match &app.mode {
         Mode::Clock => {}
@@ -806,7 +806,7 @@ fn alarm_time(alarm: &Alarm) -> String {
     alarm.time.format(format).to_string()
 }
 
-fn render_keys(app: &App, area: Rect, buf: &mut Buffer) {
+fn render_keys(app: &App, now: DateTime<Utc>, area: Rect, buf: &mut Buffer) {
     let text = app.lang.text();
     let keys: Keys = if !app.ringing.is_empty() {
         text.ringing_keys
@@ -819,10 +819,23 @@ fn render_keys(app: &App, area: Rect, buf: &mut Buffer) {
             Mode::Themes(_) => text.theme_keys,
             Mode::Calendar(CalendarPanel::Choose(_)) => text.choose_keys,
             Mode::Calendar(CalendarPanel::Address(_)) => text.input_keys,
-            Mode::Calendar(CalendarPanel::Status) if app.calendar.mac => text.mac_calendar_keys,
-            Mode::Calendar(CalendarPanel::Status) => text.calendar_keys,
+            Mode::Calendar(CalendarPanel::Status(_)) if app.calendar.mac => text.mac_calendar_keys,
+            Mode::Calendar(CalendarPanel::Status(_)) => text.calendar_keys,
             Mode::Help => &[],
         }
+    };
+    // The keys that open an event's link come first, when there is one.
+    let lead: Keys = if !app.ringing.is_empty() {
+        match app.ringing_link() {
+            Some(_) => text.ringing_link_keys,
+            None => &[],
+        }
+    } else if matches!(app.mode, Mode::Calendar(CalendarPanel::Status(_)))
+        && app.calendar.listed(now).any(|event| event.link.is_some())
+    {
+        text.event_keys
+    } else {
+        &[]
     };
     // Tab keys only where they do something.
     let applies = |key: &str| match key {
@@ -832,7 +845,7 @@ fn render_keys(app: &App, area: Rect, buf: &mut Buffer) {
     };
     let mut spans = Vec::new();
     let mut width = 0;
-    for (key, action) in keys.iter().filter(|(key, _)| applies(key)) {
+    for (key, action) in lead.iter().chain(keys).filter(|(key, _)| applies(key)) {
         let item = key.width() + action.width() + 3;
         if width + item > usize::from(area.width) {
             break;
@@ -1118,6 +1131,9 @@ fn render_themes(frame: &mut Frame, app: &App, picker: &ThemePicker) {
     }
 }
 
+/// Width of the calendar pop-up, borders included.
+const CALENDAR_WIDTH: u16 = 76;
+
 /// Picking where events come from; typing an iCal address, with where to find
 /// it; or the source, the reminder and the next events.
 fn render_calendar(frame: &mut Frame, app: &App, panel: &CalendarPanel, now: DateTime<Utc>) {
@@ -1152,7 +1168,7 @@ fn render_calendar(frame: &mut Frame, app: &App, panel: &CalendarPanel, now: Dat
             lines.push(Line::raw(""));
             input = Some(value.as_str());
         }
-        CalendarPanel::Status => {
+        CalendarPanel::Status(selected) => {
             let source = match &calendar.address {
                 _ if calendar.mac => text.mac_calendar.to_owned(),
                 Some(address) => calendar::describe_address(address),
@@ -1211,31 +1227,47 @@ fn render_calendar(frame: &mut Frame, app: &App, panel: &CalendarPanel, now: Dat
                 _ => {}
             }
             lines.push(Line::raw(""));
-            let upcoming: Vec<_> = calendar
-                .events
-                .iter()
-                .filter(|event| event.start > now)
-                .take(10)
-                .collect();
+            let upcoming: Vec<_> = calendar.listed(now).collect();
             if upcoming.is_empty() && calendar.updated.is_some() {
                 lines.push(Line::styled(format!(" {}", text.no_events), dim));
                 if calendar.mac {
                     lines.push(Line::styled(format!(" {}", text.no_events_mac), dim));
                 }
             }
-            for event in upcoming {
+            // With links to open, each event shows where its link goes, at
+            // the right while that leaves its title half the row, and the one
+            // Enter opens stands out.
+            let linked = upcoming.iter().any(|event| event.link.is_some());
+            let picked = (*selected).min(upcoming.len().saturating_sub(1));
+            let width = usize::from(CALENDAR_WIDTH.min(frame.area().width).saturating_sub(2));
+            for (index, event) in upcoming.into_iter().enumerate() {
                 let start = app.system.local_time(event.start);
-                lines.push(Line::from(vec![
-                    Span::styled(
-                        format!(
-                            " {} {} ",
-                            app.lang.short_weekday(start.date_naive()),
-                            start.format("%H:%M")
-                        ),
-                        Style::new().fg(palette.accent),
-                    ),
-                    Span::raw(event.title.clone()),
-                ]));
+                let when = format!(
+                    " {} {} ",
+                    app.lang.short_weekday(start.date_naive()),
+                    start.format("%H:%M")
+                );
+                let after_when = width.saturating_sub(when.width());
+                let site = event
+                    .link
+                    .as_deref()
+                    .map(|link| format!("  {} ", calendar::describe_link(link)))
+                    .filter(|site| site.width() <= after_when / 2)
+                    .unwrap_or_default();
+                let room = after_when.saturating_sub(site.width());
+                let title = shorten(&event.title, room);
+                let gap = " ".repeat(room.saturating_sub(title.width()));
+                let line = Line::from(vec![
+                    Span::styled(when, Style::new().fg(palette.accent)),
+                    Span::raw(title),
+                    Span::raw(gap),
+                    Span::styled(site, dim),
+                ]);
+                lines.push(if linked && index == picked {
+                    line.reversed()
+                } else {
+                    line
+                });
             }
         }
     }
@@ -1244,7 +1276,7 @@ fn render_calendar(frame: &mut Frame, app: &App, panel: &CalendarPanel, now: Dat
         frame,
         app,
         text.calendar,
-        (76, lines.len() as u16 + input_rows + 2),
+        (CALENDAR_WIDTH, lines.len() as u16 + input_rows + 2),
     );
     for (row, line) in lines.into_iter().enumerate() {
         let y = area.y + row as u16;
@@ -1376,6 +1408,9 @@ mod tests {
         overview.active = 0;
         overview.show_map = true;
         apps.push(overview);
+        let mut calendar = with_meetings();
+        calendar.on_key(KeyEvent::from(KeyCode::Char('g')), now());
+        apps.push(calendar);
         for mode in 0..3 {
             let mut app = with_city("Auckland");
             app.add_alarm(When::In(Duration::minutes(3)), "Tea".into(), now());
@@ -1830,6 +1865,7 @@ mod tests {
             uid: "1".into(),
             title: "Fórum - Otimização de Operação".into(),
             start: now() + Duration::minutes(56),
+            link: None,
         }];
         let with = laid_out(&app, area);
         assert_eq!(with.len(), without.len() + 1, "{with:?}");
@@ -1858,6 +1894,7 @@ mod tests {
             uid: "1".into(),
             title: "Fórum - Otimização de Operação".into(),
             start: now() + Duration::minutes(56),
+            link: None,
         }];
         let local = app.zone().local_time(now());
         let full = local.format("%H:%M:%S").to_string();
@@ -1957,6 +1994,7 @@ mod tests {
             uid: "1".into(),
             title: title.into(),
             start,
+            link: None,
         }];
         app
     }
@@ -1998,6 +2036,77 @@ mod tests {
         assert!(text.contains("Reminder: 5 min before"), "{text}");
         assert!(text.contains("Fri 13:39 Planning"), "{text}");
         assert!(text.contains("e edit address"), "{text}");
+    }
+
+    /// Where `wanted` starts on screen.
+    fn find_text(buf: &Buffer, wanted: &str) -> Option<(u16, u16)> {
+        let text = screen(buf);
+        text.lines().enumerate().find_map(|(y, line)| {
+            let at = line.find(wanted)?;
+            Some((line[..at].chars().count() as u16, y as u16))
+        })
+    }
+
+    fn with_meetings() -> App {
+        let mut app = with_event("Planning", now() + Duration::minutes(35));
+        app.calendar.events[0].link = Some("https://meet.google.com/abc-defg-hij".into());
+        app.calendar.events.push(crate::calendar::Event {
+            uid: "2".into(),
+            title: "Lunch".into(),
+            start: now() + Duration::hours(2),
+            link: None,
+        });
+        app.calendar.updated = Some(now());
+        app
+    }
+
+    #[test]
+    fn the_calendar_panel_shows_where_event_links_go() {
+        let mut app = with_meetings();
+        app.on_key(KeyEvent::from(KeyCode::Char('g')), now());
+        let buf = draw(&app, 100, 30, now());
+        let text = screen(&buf);
+        assert!(text.contains("Fri 13:39 Planning"), "{text}");
+        assert!(text.contains("meet.google.com"), "{text}");
+        assert!(text.contains("↑↓ choose  Enter open link"), "{text}");
+        let picked = |buf: &Buffer, title| {
+            let at = find_text(buf, title).unwrap();
+            buf[at].modifier.contains(Modifier::REVERSED)
+        };
+        assert!(picked(&buf, "Fri 13:39 Planning") && !picked(&buf, "Fri 15:04 Lunch"));
+        app.on_key(KeyEvent::from(KeyCode::Down), now());
+        let buf = draw(&app, 100, 30, now());
+        assert!(!picked(&buf, "Fri 13:39 Planning") && picked(&buf, "Fri 15:04 Lunch"));
+
+        // A long title gives way to where its link goes, down to half the
+        // row; a narrower pane keeps the title.
+        app.calendar.events[0].title = "Quarterly planning ".repeat(6);
+        let text = screen(&draw(&app, 60, 30, now()));
+        assert!(text.contains("…  meet.google.com"), "{text}");
+        let text = screen(&draw(&app, 40, 30, now()));
+        assert!(text.contains("13:39 Quarterly planning Quarter…"), "{text}");
+        assert!(!text.contains("meet.google.com"), "{text}");
+    }
+
+    #[test]
+    fn without_links_the_calendar_panel_picks_nothing() {
+        let mut app = with_event("Planning", now() + Duration::minutes(35));
+        app.calendar.updated = Some(now());
+        app.on_key(KeyEvent::from(KeyCode::Char('g')), now());
+        let buf = draw(&app, 100, 30, now());
+        let at = find_text(&buf, "Fri 13:39 Planning").unwrap();
+        assert!(!buf[at].modifier.contains(Modifier::REVERSED));
+        assert!(!screen(&buf).contains("open link"));
+    }
+
+    #[test]
+    fn offers_to_open_the_link_of_the_event_ringing() {
+        let mut app = with_meetings();
+        let reminder = now() + Duration::minutes(30);
+        app.tick(reminder);
+        let text = screen(&draw(&app, 100, 30, reminder));
+        assert!(text.contains("ALARM 13:39:05 · Planning"), "{text}");
+        assert!(text.contains("o open link  any key stop"), "{text}");
     }
 
     #[test]

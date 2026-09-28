@@ -109,7 +109,9 @@ you pick.
   weather as text instead.
 - **Calendar.** `g` connects the Mac Calendar (every account in the macOS
   Calendar app, Google included) or any iCal feed. The next event shows under
-  the clock, and a reminder rings 5 minutes before it.
+  the clock, and a reminder rings 5 minutes before it. `o` on the blinking
+  reminder, or `Enter` on an event in the `g` list, opens its video call
+  (Meet, Zoom, Teams…) in the browser.
 - **Blinking alarms.** `a` opens the alarm list. Type `07:30`, `7h30`,
   `7:30pm` or a delay such as `+10m`, optionally followed by a label. When an
   alarm rings the whole screen flashes and the terminal bell rings, which
@@ -180,12 +182,14 @@ go back to the theme you had.
 In the alarm list: `n` new alarm, `Space` switch on or off, `r` repeat daily,
 `d` delete, `Esc` close.
 
-In the calendar: pick the Mac Calendar or an iCal address; then `+` `-`
-change the reminder minutes (0 turns it off), `r` refreshes, `d` disconnects,
-`e` edits an iCal address, and for the Mac Calendar `o` opens the privacy
-setting and `a` the Internet Accounts.
+In the calendar: pick the Mac Calendar or an iCal address; then `↑`/`↓` pick
+an event and `Enter` opens its link, `+` `-` change the reminder minutes (0
+turns it off), `r` refreshes, `d` disconnects, `e` edits an iCal address, and
+for the Mac Calendar `o` opens the privacy setting and `a` the Internet
+Accounts.
 
-While an alarm or reminder rings: any key stops it, `z` snoozes for 5 minutes.
+While an alarm or reminder rings: any key stops it, `z` snoozes for 5 minutes
+and, for an event with a link, `o` opens it.
 
 ### Alarm times
 
@@ -215,6 +219,13 @@ Press `g` and pick where events come from. Either way, recurring events are
 followed, all-day, cancelled and declined events are left out, and the
 reminder rings 5 minutes before each event by default; `+` and `-` change it,
 0 turns it off (or `--reminder <minutes>`).
+
+An event's link is its video call when it has one (Google Meet, Zoom,
+Microsoft Teams, Webex, Jitsi and others), found in its conference details,
+address, location or description; otherwise the first web address it
+mentions. The `g` list shows where each link goes, at the right. While its
+reminder blinks, `o` opens the link in the browser (a snoozed reminder keeps
+it); in the `g` list, `↑`/`↓` pick an event and `Enter` opens its link.
 
 ### Mac Calendar (macOS)
 
@@ -310,7 +321,10 @@ sua cidade uma vez e passa a mostrar a previsão dela (`W` troca a cidade). `g` 
 Calendário, Google Workspace incluída (adicione a conta em Ajustes do Sistema
 › Contas de Internet e permita o acesso quando o macOS pedir), ou um endereço
 iCal: o próximo evento aparece sob o relógio e um lembrete toca 5 minutos
-antes. Alarmes (`a`) aceitam `07:30`, `7h30` ou `+10m` com um nome opcional;
+antes. Enquanto o lembrete pisca, `o` abre no navegador o link do evento (a
+chamada de vídeo do Meet, Zoom, Teams…, ou o primeiro link que ele traz); na
+lista do `g`, `↑` `↓` escolhem um evento e `Enter` abre o link dele. Alarmes
+(`a`) aceitam `07:30`, `7h30` ou `+10m` com um nome opcional;
 quando tocam, a tela pisca até você apertar uma tecla (`z` adia 5 minutos).
 Tudo é salvo a cada mudança em `~/.config/meridian/state.json` e volta mesmo
 depois de o computador desligar. A interface fica em português quando `$LANG`

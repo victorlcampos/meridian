@@ -18,6 +18,8 @@ pub struct Alarm {
     pub timer: bool,
     /// When it rings next; `None` while switched off.
     pub next: Option<DateTime<Utc>>,
+    /// Link of the calendar event it reminds of, opened with `o` while it rings.
+    pub link: Option<String>,
 }
 
 impl Alarm {
@@ -197,6 +199,7 @@ impl Alarms {
             daily: false,
             timer,
             next: Some(next),
+            link: None,
         })
     }
 
@@ -229,6 +232,12 @@ impl Alarms {
     pub fn toggle_daily(&mut self, id: u32) {
         if let Some(alarm) = self.items.iter_mut().find(|alarm| alarm.id == id) {
             alarm.daily = !alarm.daily;
+        }
+    }
+
+    pub fn set_link(&mut self, id: u32, link: Option<String>) {
+        if let Some(alarm) = self.items.iter_mut().find(|alarm| alarm.id == id) {
+            alarm.link = link;
         }
     }
 

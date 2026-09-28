@@ -22,6 +22,9 @@ pub struct Event {
     pub uid: String,
     pub title: String,
     pub start: DateTime<Utc>,
+    /// Web address to open for it: its video call, or else the first link
+    /// it mentions (see `find_link`).
+    pub link: Option<String>,
 }
 
 impl Event {
@@ -58,6 +61,12 @@ struct Component {
     cancelled: bool,
     /// Attendees who declined, by lower-case e-mail.
     declined: Vec<String>,
+    /// Where a link to open is looked for: the video call's own fields, the
+    /// event's URL, its location and its description.
+    conference: String,
+    url: String,
+    location: String,
+    description: String,
 }
 
 #[derive(Clone, Copy)]
@@ -135,6 +144,12 @@ pub fn upcoming(ics: &str, from: DateTime<Utc>, until: DateTime<Utc>, system: Zo
             }
             _ => vec![start],
         };
+        let link = find_link([
+            component.conference.as_str(),
+            &component.url,
+            &component.location,
+            &component.description,
+        ]);
         for start in starts {
             let moved = component.recurrence_id.is_none()
                 && replaced.contains(&(component.uid.clone(), start.timestamp()));
@@ -143,6 +158,7 @@ pub fn upcoming(ics: &str, from: DateTime<Utc>, until: DateTime<Utc>, system: Zo
                     uid: component.uid.clone(),
                     title: component.summary.clone(),
                     start,
+                    link: link.clone(),
                 });
             }
         }
@@ -160,6 +176,14 @@ fn read_event_property(event: &mut Component, name: &str, property: Property) {
         "EXDATE" => event.exdates.push(property),
         "RECURRENCE-ID" => event.recurrence_id = Some(property),
         "STATUS" => event.cancelled = property.value.eq_ignore_ascii_case("CANCELLED"),
+        "URL" => event.url = property.value,
+        "LOCATION" => event.location = unescape(&property.value),
+        "DESCRIPTION" => event.description = unescape(&property.value),
+        // RFC 7986's, Google Meet's and Microsoft Teams' links to the call.
+        "CONFERENCE" | "X-GOOGLE-CONFERENCE" | "X-MICROSOFT-SKYPETEAMSMEETINGURL" => {
+            event.conference.push_str(&property.value);
+            event.conference.push(' ');
+        }
         "ATTENDEE" => {
             let declined = property
                 .param("PARTSTAT")
@@ -308,6 +332,108 @@ fn unescape(text: &str) -> String {
     out
 }
 
+/// Hosts of video calls. Their links win: what a meeting's link should open
+/// is the call, not the documents its notes mention.
+const CALL_HOSTS: [&str; 13] = [
+    "meet.google.com",
+    "zoom.us",
+    "zoomgov.com",
+    "teams.microsoft.com",
+    "teams.live.com",
+    "webex.com",
+    "whereby.com",
+    "meet.jit.si",
+    "gotomeeting.com",
+    "meet.goto.com",
+    "chime.aws",
+    "bluejeans.com",
+    "facetime.apple.com",
+];
+
+/// The web address to open for an event: the first video call link (Meet,
+/// Zoom, Teams…) in `fields`, or else their first link. `fields` go from the
+/// most telling to the least: the call's own, the URL, location and notes.
+pub fn find_link<'a>(fields: impl IntoIterator<Item = &'a str>) -> Option<String> {
+    let found: Vec<String> = fields.into_iter().flat_map(links).collect();
+    let call = found.iter().find(|link| is_call(link));
+    call.or(found.first()).cloned()
+}
+
+/// The http(s) addresses in `text`, in order. One ends at a space, a quote
+/// or an angle bracket (`Join<https://…>` in e-mailed invitations), without
+/// the punctuation of the sentence around it.
+fn links(text: &str) -> Vec<String> {
+    // Lower-casing ASCII keeps every byte where it was.
+    let lower = text.to_ascii_lowercase();
+    let mut found = Vec::new();
+    let mut from = 0;
+    while let Some(at) = lower[from..].find("http").map(|at| from + at) {
+        let scheme = &lower[at + 4..];
+        if !(scheme.starts_with("://") || scheme.starts_with("s://")) {
+            from = at + 4;
+            continue;
+        }
+        let end = text[at..]
+            .find(|ch: char| ch.is_whitespace() || matches!(ch, '<' | '>' | '"' | '\'' | '`'))
+            .map_or(text.len(), |end| at + end);
+        let link = trim_link(&text[at..end]);
+        if !host(link).is_empty() {
+            // Links copied out of HTML notes.
+            found.push(link.replace("&amp;", "&"));
+        }
+        from = end;
+    }
+    found
+}
+
+/// `link` without the punctuation that ends a sentence or closes a
+/// parenthesis around it: `(https://zoom.us/j/1).` gives `https://zoom.us/j/1`.
+fn trim_link(mut link: &str) -> &str {
+    while let Some(last) = link.chars().next_back() {
+        let unmatched = |open: char| link.matches(open).count() < link.matches(last).count();
+        let cut = match last {
+            '.' | ',' | ';' | ':' | '!' | '?' | '*' => true,
+            ')' => unmatched('('),
+            ']' => unmatched('['),
+            _ => false,
+        };
+        if !cut {
+            break;
+        }
+        link = &link[..link.len() - last.len_utf8()];
+    }
+    link
+}
+
+/// The host of a web address, in lower case: `us02web.zoom.us` for
+/// `https://us02web.zoom.us/j/1?pwd=x`.
+fn host(link: &str) -> String {
+    let rest = link.split_once("://").map_or(link, |(_, rest)| rest);
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    let host = authority.rsplit('@').next().unwrap_or_default();
+    host.split(':')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+}
+
+fn is_call(link: &str) -> bool {
+    let host = host(link);
+    CALL_HOSTS.iter().any(|call| {
+        host.strip_suffix(call)
+            .is_some_and(|sub| sub.is_empty() || sub.ends_with('.'))
+    })
+}
+
+/// Where a link goes, to show: its host without `www.`.
+pub fn describe_link(link: &str) -> String {
+    let host = host(link);
+    match host.strip_prefix("www.") {
+        Some(rest) => rest.to_owned(),
+        None => host,
+    }
+}
+
 /// A calendar address safe to show: host and file name, not the secret in between.
 pub fn describe_address(address: &str) -> String {
     let rest = address.split_once("://").map_or(address, |(_, rest)| rest);
@@ -343,6 +469,10 @@ DTSTART;TZID=America/Sao_Paulo:20260925T140000\r
 DTEND;TZID=America/Sao_Paulo:20260925T150000\r
 UID:planning@google.com\r
 SUMMARY:Planejamento\\, sprint 42\r
+DESCRIPTION:Pauta: https://docs.google.com/document/d/1abc/edit.\\n\\n-::~:~::~\r
+ :~::-\\nJoin with Google Meet: https://meet.google.com/abc-defg\r
+ -hij\\n\\nLearn more about Meet at: https://support.google.com/a/users/answe\r
+ r/9282720\r
 BEGIN:VALARM\r
 ACTION:DISPLAY\r
 SUMMARY:ignored alarm text\r
@@ -353,6 +483,7 @@ DTSTART:20260925T190000Z\r
 UID:call@google.com\r
 SUMMARY:Call with a very long title that Google folds across\r
   two lines\r
+LOCATION:https://us02web.zoom.us/j/81234567890?pwd=AbC.1\r
 END:VEVENT\r
 BEGIN:VEVENT\r
 DTSTART;VALUE=DATE:20260926\r
@@ -377,6 +508,7 @@ RRULE:FREQ=WEEKLY;BYDAY=MO;UNTIL=20261124T000000Z\r
 EXDATE;TZID=America/New_York:20261109T090000\r
 UID:standup@google.com\r
 SUMMARY:Standup\r
+X-GOOGLE-CONFERENCE:https://meet.google.com/xyz-wxyz-xyz\r
 END:VEVENT\r
 BEGIN:VEVENT\r
 DTSTART;TZID=America/New_York:20261117T100000\r
@@ -388,6 +520,7 @@ BEGIN:VEVENT\r
 DTSTART:20261001T120000\r
 UID:floating@google.com\r
 SUMMARY:Floating\r
+URL:https://example.com/agenda\r
 END:VEVENT\r
 END:VCALENDAR\r
 ";
@@ -482,6 +615,96 @@ END:VCALENDAR\r
             system,
         );
         assert_eq!(titles(&events), ["Once"]);
+    }
+
+    #[test]
+    fn finds_the_link_of_each_event() {
+        let events = upcoming(
+            SAMPLE,
+            utc(2026, 9, 25, 0, 0),
+            utc(2026, 12, 1, 0, 0),
+            Zone::City(chrono_tz::UTC),
+        );
+        let link = |title: &str| {
+            let event = events.iter().find(|event| event.title == title).unwrap();
+            event.link.as_deref()
+        };
+        assert_eq!(
+            link("Planejamento, sprint 42"),
+            Some("https://meet.google.com/abc-defg-hij"),
+            "the call wins over the document mentioned first"
+        );
+        assert_eq!(
+            link("Call with a very long title that Google folds across two lines"),
+            Some("https://us02web.zoom.us/j/81234567890?pwd=AbC.1")
+        );
+        assert_eq!(link("Floating"), Some("https://example.com/agenda"));
+        let standups: Vec<_> = events
+            .iter()
+            .filter(|event| event.title == "Standup")
+            .map(|event| event.link.as_deref())
+            .collect();
+        assert_eq!(
+            standups,
+            [Some("https://meet.google.com/xyz-wxyz-xyz"); 3],
+            "every occurrence of a series"
+        );
+    }
+
+    #[test]
+    fn prefers_the_video_call_to_other_links() {
+        let teams = "https://teams.microsoft.com/l/meetup-join/19%3ameeting_Zm9v%40thread.v2/0?context=%7b%22Tid%22%3a%221%22%7d";
+        let notes = format!(
+            "Agenda: https://docs.google.com/document/d/1/edit\n\
+             Click here to join the meeting<{teams}>\n\
+             Learn More<https://aka.ms/JoinTeamsMeeting>"
+        );
+        assert_eq!(
+            find_link(["https://example.com/event", "Room 2", &notes]).as_deref(),
+            Some(teams)
+        );
+        // Without a call: the event's own link, else the first one mentioned.
+        assert_eq!(
+            find_link(["https://example.com/event", "see https://docs.google.com/x"]).as_deref(),
+            Some("https://example.com/event")
+        );
+        assert_eq!(
+            find_link(["Room 2", "Slides (https://docs.google.com/x)."]).as_deref(),
+            Some("https://docs.google.com/x")
+        );
+        assert_eq!(find_link(["tel:+15551234", "not even http://"]), None);
+        // A company's own Zoom counts; a look-alike does not.
+        assert_eq!(
+            find_link(["https://notzoom.us/j/1 https://acme.zoom.us/j/2"]).as_deref(),
+            Some("https://acme.zoom.us/j/2")
+        );
+        assert_eq!(
+            find_link([r#"<a href="https://zoom.us/j/1?pwd=x&amp;from=addon">Join</a>"#])
+                .as_deref(),
+            Some("https://zoom.us/j/1?pwd=x&from=addon"),
+            "copied out of HTML"
+        );
+        assert_eq!(
+            find_link(["https://en.wikipedia.org/wiki/Rust_(language)"]).as_deref(),
+            Some("https://en.wikipedia.org/wiki/Rust_(language)"),
+            "a parenthesis of its own stays"
+        );
+    }
+
+    #[test]
+    fn shows_where_a_link_goes() {
+        assert_eq!(
+            describe_link("https://meet.google.com/abc-defg-hij"),
+            "meet.google.com"
+        );
+        assert_eq!(
+            describe_link("HTTPS://www.Example.com:8443/a?b#c"),
+            "example.com"
+        );
+        assert_eq!(
+            describe_link("https://ana@us02web.zoom.us/j/1"),
+            "us02web.zoom.us"
+        );
     }
 
     #[test]

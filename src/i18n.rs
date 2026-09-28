@@ -66,9 +66,13 @@ pub struct Text {
     pub alarm_keys: Keys,
     pub input_keys: Keys,
     pub ringing_keys: Keys,
+    /// Before `ringing_keys` when what rings is an event with a link.
+    pub ringing_link_keys: Keys,
     pub theme_keys: Keys,
     pub calendar_keys: Keys,
     pub mac_calendar_keys: Keys,
+    /// Before the calendar's keys when the events listed have links.
+    pub event_keys: Keys,
     pub choose_keys: Keys,
     pub help_keys: Keys,
     weekdays: [&'static str; 7],
@@ -152,6 +156,7 @@ const EN: Text = Text {
     ],
     input_keys: &[("Enter", "save"), ("Esc", "cancel")],
     ringing_keys: &[("any key", "stop"), ("z", "snooze 5 min")],
+    ringing_link_keys: &[("o", "open link")],
     theme_keys: &[("↑↓", "try"), ("Enter", "use"), ("Esc", "cancel")],
     calendar_keys: &[
         ("e", "edit address"),
@@ -168,6 +173,7 @@ const EN: Text = Text {
         ("d", "disconnect"),
         ("Esc", "close"),
     ],
+    event_keys: &[("↑↓", "choose"), ("Enter", "open link")],
     choose_keys: &[("↑↓", "choose"), ("Enter", "connect"), ("Esc", "close")],
     help_keys: &[
         ("c  /", "add a city (it takes the place of local time)"),
@@ -184,7 +190,8 @@ const EN: Text = Text {
         ("q  Ctrl+C", "quit"),
         ("", ""),
         ("", "When an alarm rings the screen blinks:"),
-        ("", "any key stops it, z snoozes 5 minutes."),
+        ("", "any key stops it, z snoozes 5 minutes"),
+        ("", "and, for an event, o opens its link."),
     ],
     weekdays: [
         "Monday",
@@ -292,6 +299,7 @@ const PT: Text = Text {
     ],
     input_keys: &[("Enter", "salvar"), ("Esc", "cancelar")],
     ringing_keys: &[("qualquer tecla", "parar"), ("z", "soneca 5 min")],
+    ringing_link_keys: &[("o", "abrir link")],
     theme_keys: &[
         ("↑↓", "experimentar"),
         ("Enter", "usar"),
@@ -312,6 +320,7 @@ const PT: Text = Text {
         ("d", "desconectar"),
         ("Esc", "fechar"),
     ],
+    event_keys: &[("↑↓", "escolher"), ("Enter", "abrir link")],
     choose_keys: &[("↑↓", "escolher"), ("Enter", "conectar"), ("Esc", "fechar")],
     help_keys: &[
         ("c  /", "adicionar uma cidade (ela substitui a hora local)"),
@@ -331,7 +340,8 @@ const PT: Text = Text {
         ("q  Ctrl+C", "sair"),
         ("", ""),
         ("", "Quando um alarme toca, a tela pisca:"),
-        ("", "qualquer tecla para, z adia 5 minutos."),
+        ("", "qualquer tecla para, z adia 5 minutos"),
+        ("", "e, se for um evento, o abre o link dele."),
     ],
     weekdays: [
         "segunda-feira",
@@ -475,6 +485,8 @@ mod tests {
         let keys = |list: Keys| list.iter().map(|(key, _)| *key).collect::<Vec<_>>();
         assert_eq!(keys(en.clock_keys), keys(pt.clock_keys));
         assert_eq!(keys(en.help_keys), keys(pt.help_keys));
+        assert_eq!(keys(en.ringing_link_keys), keys(pt.ringing_link_keys));
+        assert_eq!(keys(en.event_keys), keys(pt.event_keys));
         assert_eq!(en.alarm_keys.len(), pt.alarm_keys.len());
     }
 }
