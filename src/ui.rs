@@ -567,9 +567,16 @@ fn event_line(app: &App, now: DateTime<Utc>, width: u16) -> Option<Info> {
     let dim = app.palette().muted();
     let calendar = &app.calendar;
     let Some(event) = calendar.next(now) else {
-        let failed = calendar.address.is_some() && calendar.error.is_some();
-        return failed.then(|| Info {
-            line: Line::styled(text.calendar_unavailable, dim),
+        // A calendar that stopped answering says so rather than going quiet:
+        // macOS forgets meridian's access to the Mac Calendar when it cannot
+        // recognize the binary, after an update signed the old way.
+        let line = match (calendar.mac, calendar.access, &calendar.error) {
+            (true, Some(Access::Denied | Access::NotAsked), _) => text.calendar_no_access,
+            (_, _, Some(_)) if calendar.connected() => text.calendar_unavailable,
+            _ => return None,
+        };
+        return Some(Info {
+            line: Line::styled(line, dim),
             above: false,
         });
     };
@@ -1857,6 +1864,21 @@ mod tests {
             assert!(text.contains("Google included"), "{text}");
         }
         assert!(text.contains("Enter connect"), "{text}");
+    }
+
+    #[test]
+    fn says_when_the_mac_calendar_lost_its_access() {
+        let mut app = app();
+        app.calendar.mac = true;
+        let text = screen(&draw(&app, 80, 24, now()));
+        assert!(
+            !text.contains("Calendar"),
+            "nothing before macOS answers:\n{text}"
+        );
+        app.calendar.access = Some(Access::NotAsked);
+        app.calendar.error = Some("no access to the calendars".into());
+        let text = screen(&draw(&app, 80, 24, now()));
+        assert!(text.contains("Calendar without access: press g"), "{text}");
     }
 
     #[test]

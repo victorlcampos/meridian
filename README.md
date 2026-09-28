@@ -130,11 +130,13 @@ cargo install --git https://github.com/victorlcampos/meridian
 
 Needs Rust 1.88 or newer ([rustup.rs](https://rustup.rs)).
 
-On macOS, sign the installed binary once more so macOS can read the reason
-meridian gives when it asks for your calendars (repeat after each update):
+On macOS, sign the installed binary once more (after each update) so macOS
+can read the reason meridian gives when it asks for your calendars, and
+recognizes it as the same app from one update to the next:
 
 ```sh
-codesign --force --sign - --identifier io.github.victorlcampos.meridian ~/.cargo/bin/meridian
+codesign --force --sign - --identifier io.github.victorlcampos.meridian \
+  -r='designated => identifier "io.github.victorlcampos.meridian"' ~/.cargo/bin/meridian
 ```
 
 ## Usage
@@ -229,7 +231,10 @@ refuses without asking when that terminal is built with the hardened runtime
 and no calendar entitlement (cmux, for instance). So meridian reads the
 calendar through a helper copy of itself that macOS treats as its own app,
 with the reason embedded in the binary; that is what the `codesign` step
-above binds. After an update macOS may ask again.
+above binds. It also tells macOS to know meridian by that name rather than
+by the exact binary, or every update would lose the access you gave: the
+calendar would go quiet until you allowed it again (meridian then says
+*Calendar without access: press g*).
 
 If you said no, allow your terminal in System Settings › Privacy & Security ›
 Calendars (`o` opens it), then press `r`. The calendar is read every minute.
