@@ -46,6 +46,15 @@ impl Zone {
         }
     }
 
+    /// When the day of `now` began in this zone: at midnight, or at the first
+    /// hour a DST change left in it.
+    pub fn start_of_day(self, now: DateTime<Utc>) -> DateTime<Utc> {
+        let day = self.local_time(now).date_naive();
+        (0..3)
+            .find_map(|hour| self.instant(day.and_hms_opt(hour, 0, 0)?))
+            .unwrap_or(now)
+    }
+
     /// Letter abbreviation such as "JST" or "CEST". Zones whose abbreviation is
     /// numeric ("-03") return `None`, since the UTC offset already says that.
     pub fn abbreviation(self, now: DateTime<Utc>) -> Option<String> {
@@ -124,5 +133,25 @@ mod tests {
         let fall = NaiveDate::from_ymd_opt(2026, 11, 1).unwrap();
         let repeated = new_york.instant(fall.and_hms_opt(1, 30, 0).unwrap());
         assert_eq!(repeated, Some(utc(2026, 11, 1, 5, 30)));
+    }
+
+    #[test]
+    fn finds_when_the_day_began() {
+        let sao_paulo = Zone::City(chrono_tz::America::Sao_Paulo);
+        assert_eq!(
+            sao_paulo.start_of_day(utc(2026, 9, 25, 16, 4)),
+            utc(2026, 9, 25, 3, 0)
+        );
+        assert_eq!(
+            sao_paulo.start_of_day(utc(2026, 9, 26, 2, 0)),
+            utc(2026, 9, 25, 3, 0),
+            "still the 25th in São Paulo"
+        );
+        // Chile moves its clocks from midnight to 1 a.m.
+        let santiago = Zone::City(chrono_tz::America::Santiago);
+        assert_eq!(
+            santiago.start_of_day(utc(2026, 9, 6, 15, 0)),
+            utc(2026, 9, 6, 4, 0)
+        );
     }
 }

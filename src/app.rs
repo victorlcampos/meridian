@@ -63,17 +63,18 @@ pub enum CalendarPanel {
     Choose(usize),
     /// Typing an iCal address.
     Address(String),
-    /// Connected: the source, the reminder and the next events, one of them
-    /// picked to open its link.
+    /// Connected: the source, the reminder and the events of `App::agenda`,
+    /// one of them picked to open its link.
     Status(usize),
 }
 
-/// The calendar feed, its next events and the reminders already rung.
+/// The calendar feed, its events and the reminders already rung.
 pub struct CalendarSlot {
     /// Secret iCal address or .ics file; `None` when not connected.
     pub address: Option<String>,
     /// Minutes before an event its reminder rings; 0 switches reminders off.
     pub reminder: u32,
+    /// From the start of today on, earliest first: see `App::calendar_window`.
     pub events: Vec<Event>,
     /// Last successful download.
     pub updated: Option<DateTime<Utc>>,
@@ -112,14 +113,6 @@ impl CalendarSlot {
     /// The next event that has not started yet.
     pub fn next(&self, now: DateTime<Utc>) -> Option<&Event> {
         self.events.iter().find(|event| event.start > now)
-    }
-
-    /// The events the pop-up lists: the next ones that have not started yet.
-    pub fn listed(&self, now: DateTime<Utc>) -> impl Iterator<Item = &Event> {
-        self.events
-            .iter()
-            .filter(move |event| event.start > now)
-            .take(LISTED_EVENTS)
     }
 
     pub fn connected(&self) -> bool {
@@ -533,11 +526,39 @@ impl App {
 
     fn ask_mac_access(&mut self, now: DateTime<Utc>) {
         if let Some(net) = &self.net {
-            net.mac_calendar(MAC_KEY.to_owned(), true);
+            let (from, until) = self.calendar_window(now);
+            net.mac_calendar(MAC_KEY.to_owned(), true, from, until);
             self.calendar.asking = true;
             self.calendar.pending = true;
             self.calendar.asked = Some(now);
         }
+    }
+
+    /// The events read: from the start of today, in the computer's zone, so
+    /// the pop-up can list today's that already started, to
+    /// `calendar::WINDOW_DAYS` days ahead.
+    fn calendar_window(&self, now: DateTime<Utc>) -> (DateTime<Utc>, DateTime<Utc>) {
+        let until = now + Duration::days(calendar::WINDOW_DAYS);
+        (self.system.start_of_day(now), until)
+    }
+
+    /// The events the calendar pop-up lists: today's that already started,
+    /// then the next ones.
+    pub fn agenda(&self, now: DateTime<Utc>) -> impl Iterator<Item = &Event> {
+        let today = self.system.start_of_day(now);
+        let events = &self.calendar.events;
+        let started = events
+            .iter()
+            .filter(move |event| (today..=now).contains(&event.start));
+        let next = events.iter().filter(move |event| event.start > now);
+        started.chain(next.take(LISTED_EVENTS))
+    }
+
+    /// The calendar pop-up on the next event, below today's that already
+    /// started.
+    fn calendar_status(&self, now: DateTime<Utc>) -> CalendarPanel {
+        let started = self.agenda(now).filter(|event| event.start <= now);
+        CalendarPanel::Status(started.count())
     }
 
     /// Connects to an iCal address, or disconnects with `None`.
@@ -626,8 +647,8 @@ impl App {
                 self.calendar.pending = false;
                 match result {
                     Ok(text) if text.contains("BEGIN:VCALENDAR") => {
-                        let until = now + Duration::days(calendar::WINDOW_DAYS);
-                        self.calendar.events = calendar::upcoming(&text, now, until, self.system);
+                        let (from, until) = self.calendar_window(now);
+                        self.calendar.events = calendar::upcoming(&text, from, until, self.system);
                         self.calendar.updated = Some(now);
                         self.calendar.error = None;
                     }
@@ -649,13 +670,14 @@ impl App {
         }
         if self.calendar.mac {
             // Local and quick to read: every minute.
+            let (from, until) = self.calendar_window(now);
             let calendar = &mut self.calendar;
             if !calendar.pending
                 && calendar
                     .asked
                     .is_none_or(|asked| now - asked >= Duration::minutes(1))
             {
-                net.mac_calendar(MAC_KEY.to_owned(), false);
+                net.mac_calendar(MAC_KEY.to_owned(), false, from, until);
                 calendar.pending = true;
                 calendar.asked = Some(now);
             }
@@ -785,7 +807,7 @@ impl App {
             return;
         }
         self.mode = match std::mem::replace(&mut self.mode, Mode::Clock) {
-            Mode::Clock => self.clock_key(key),
+            Mode::Clock => self.clock_key(key, now),
             Mode::Search(search) => self.search_key(search, key, ctrl),
             Mode::Alarms(panel) => self.alarms_key(panel, key, ctrl, now),
             Mode::Themes(picker) => self.themes_key(picker, key, ctrl),
@@ -794,7 +816,7 @@ impl App {
         };
     }
 
-    fn clock_key(&mut self, key: KeyEvent) -> Mode {
+    fn clock_key(&mut self, key: KeyEvent, now: DateTime<Utc>) -> Mode {
         let ch = match key.code {
             KeyCode::Right | KeyCode::Tab => {
                 self.switch_tab(1);
@@ -831,7 +853,7 @@ impl App {
             't' => return Mode::Themes(ThemePicker::new(self.theme)),
             'g' => {
                 return Mode::Calendar(match self.calendar.connected() {
-                    true => CalendarPanel::Status(0),
+                    true => self.calendar_status(now),
                     false => CalendarPanel::Choose(0),
                 });
             }
@@ -919,7 +941,7 @@ impl App {
                     KeyCode::Enter => match sources[selected] {
                         CalendarSource::Mac => {
                             self.connect_mac(now);
-                            CalendarPanel::Status(0)
+                            self.calendar_status(now)
                         }
                         CalendarSource::Ical => CalendarPanel::Address(String::new()),
                     },
@@ -927,7 +949,7 @@ impl App {
                 }
             }
             CalendarPanel::Address(mut input) => match key.code {
-                KeyCode::Esc if self.calendar.connected() => CalendarPanel::Status(0),
+                KeyCode::Esc if self.calendar.connected() => self.calendar_status(now),
                 KeyCode::Esc => CalendarPanel::Choose(0),
                 KeyCode::Enter => {
                     let address = input.trim().to_owned();
@@ -935,7 +957,7 @@ impl App {
                         CalendarPanel::Choose(0)
                     } else {
                         self.set_calendar(Some(address));
-                        CalendarPanel::Status(0)
+                        self.calendar_status(now)
                     }
                 }
                 KeyCode::Backspace => {
@@ -952,8 +974,8 @@ impl App {
             CalendarPanel::Status(selected) => {
                 let reminder = self.calendar.reminder;
                 let mac = self.calendar.mac;
-                // Events drop out of the list as they start.
-                let last = self.calendar.listed(now).count().saturating_sub(1);
+                // The list changes as the calendar refreshes, and at midnight.
+                let last = self.agenda(now).count().saturating_sub(1);
                 let mut selected = selected.min(last);
                 match key.code {
                     KeyCode::Esc | KeyCode::Char('q' | 'g') => return Mode::Clock,
@@ -977,7 +999,7 @@ impl App {
                         self.ask_mac_access(now);
                     }
                     KeyCode::Enter => {
-                        let picked = self.calendar.listed(now).nth(selected);
+                        let picked = self.agenda(now).nth(selected);
                         if let Some(link) = picked.and_then(|event| event.link.as_deref()) {
                             (self.open)(link);
                             return Mode::Clock;
@@ -1774,9 +1796,11 @@ mod tests {
 
     const MEET: &str = "https://meet.google.com/abc-defg-hij";
     const ZOOM: &str = "https://acme.zoom.us/j/81234567890";
+    const STANDUP: &str = "https://meet.google.com/sta-ndup-now";
 
-    /// A call at 12:30, lunch at 13:00 and a Zoom at 13:30, with the links
-    /// the app opens recorded.
+    /// Yesterday's planning, this morning's standup at 9:00, then, after
+    /// noon, a call at 12:30, lunch at 13:00 and a Zoom at 13:30, with the
+    /// links the app opens recorded.
     fn with_meetings() -> (App, Arc<Mutex<Vec<String>>>) {
         let mut app = app();
         let opened = record_opened(&mut app);
@@ -1788,6 +1812,8 @@ mod tests {
             link: link.map(str::to_owned),
         };
         app.calendar.events = vec![
+            event("Planning", -21 * 60, Some(MEET)),
+            event("Standup", -3 * 60, Some(STANDUP)),
             event("Review", 30, Some(MEET)),
             event("Lunch", 60, None),
             event("Retro", 90, Some(ZOOM)),
@@ -1841,7 +1867,7 @@ mod tests {
         press(&mut app, KeyCode::Down);
         press(&mut app, KeyCode::Enter);
         assert!(
-            matches!(app.mode, Mode::Calendar(CalendarPanel::Status(1))),
+            matches!(app.mode, Mode::Calendar(CalendarPanel::Status(2))),
             "lunch has no link"
         );
         press(&mut app, KeyCode::Char('j'));
@@ -1851,15 +1877,79 @@ mod tests {
     }
 
     #[test]
-    fn the_pick_stays_within_the_list_as_events_start() {
+    fn the_agenda_starts_with_the_events_of_today_that_already_started() {
+        let (app, _) = with_meetings();
+        let titles: Vec<_> = app.agenda(now()).map(|event| &event.title).collect();
+        assert_eq!(titles, ["Standup", "Review", "Lunch", "Retro"]);
+        assert!(
+            matches!(app.calendar_status(now()), CalendarPanel::Status(1)),
+            "on the next event"
+        );
+    }
+
+    #[test]
+    fn up_goes_back_to_the_meetings_of_today_already_under_way() {
         let (mut app, opened) = with_meetings();
-        app.mode = Mode::Calendar(CalendarPanel::Status(1));
-        // Review and Lunch have started: Retro is left.
+        // The review started three minutes ago; lunch is next.
+        let late = now() + Duration::minutes(33);
+        let mut press = |code| app.on_key(KeyEvent::from(code), late);
+        press(KeyCode::Char('g'));
+        press(KeyCode::Up);
+        press(KeyCode::Enter);
+        press(KeyCode::Char('g'));
+        for _ in 0..5 {
+            press(KeyCode::Up);
+        }
+        press(KeyCode::Enter);
+        assert_eq!(
+            *opened.lock().unwrap(),
+            [MEET, STANDUP],
+            "up to this morning's, not yesterday's"
+        );
+    }
+
+    #[test]
+    fn the_pick_stays_on_its_event_as_it_starts() {
+        let (mut app, opened) = with_meetings();
+        press(&mut app, KeyCode::Char('g'));
         app.on_key(
             KeyEvent::from(KeyCode::Enter),
-            now() + Duration::minutes(61),
+            now() + Duration::minutes(31),
         );
-        assert_eq!(*opened.lock().unwrap(), [ZOOM]);
+        assert_eq!(*opened.lock().unwrap(), [MEET], "the review, just started");
+    }
+
+    #[test]
+    fn reads_the_events_of_today_that_already_started() {
+        let (net, jobs, answers) = Net::manual();
+        let mut app = app();
+        app.net = Some(net);
+        app.set_calendar(Some("https://calendar.example/basic.ics".into()));
+        app.tick(now());
+        let (key, _) = jobs.try_recv().unwrap();
+        let feed = "BEGIN:VCALENDAR
+BEGIN:VEVENT\nUID:a\nSUMMARY:Yesterday\nDTSTART:20260924T230000Z\nEND:VEVENT
+BEGIN:VEVENT\nUID:b\nSUMMARY:Standup\nDTSTART:20260925T090000Z\nEND:VEVENT
+BEGIN:VEVENT\nUID:c\nSUMMARY:Review\nDTSTART:20260925T123000Z\nEND:VEVENT
+END:VCALENDAR
+";
+        answers.send((key, Answer::Text(Ok(feed.into())))).unwrap();
+        app.tick(now());
+        let titles: Vec<_> = app
+            .calendar
+            .events
+            .iter()
+            .map(|event| &event.title)
+            .collect();
+        assert_eq!(titles, ["Standup", "Review"]);
+        assert!(
+            app.ringing.is_empty(),
+            "no reminder for what already started"
+        );
+        assert_eq!(
+            app.calendar.next(now()).map(|event| event.title.as_str()),
+            Some("Review")
+        );
     }
 
     #[cfg(target_os = "macos")]
@@ -1874,7 +1964,16 @@ mod tests {
         assert!(app.calendar.mac && app.calendar.asking);
         assert!(app.state().mac_calendar);
         let (key, job) = jobs.try_recv().unwrap();
-        assert!(matches!(job, Job::MacCalendar { ask: true }));
+        let Job::MacCalendar { ask, from, until } = job else {
+            panic!("expected a read of the Mac Calendar")
+        };
+        assert!(ask);
+        let midnight = now() - Duration::hours(12);
+        assert_eq!(
+            (from, until),
+            (midnight, now() + Duration::days(7)),
+            "from today's start"
+        );
 
         let review = Event {
             uid: "1".into(),
@@ -1896,7 +1995,7 @@ mod tests {
         app.tick(now() + Duration::minutes(1));
         let (_, job) = jobs.try_recv().unwrap();
         assert!(
-            matches!(job, Job::MacCalendar { ask: false }),
+            matches!(job, Job::MacCalendar { ask: false, .. }),
             "later reads never ask again"
         );
     }
@@ -1931,7 +2030,7 @@ mod tests {
         press(&mut app, KeyCode::Char('r'));
         let (_, job) = jobs.try_recv().unwrap();
         assert!(
-            matches!(job, Job::MacCalendar { ask: true }),
+            matches!(job, Job::MacCalendar { ask: true, .. }),
             "r asks again"
         );
     }

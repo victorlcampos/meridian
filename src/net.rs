@@ -3,16 +3,21 @@
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::Duration;
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 
-use crate::calendar::{self, Event};
+use crate::calendar::Event;
 use crate::maccal;
 
 pub enum Job {
     /// Download an address, or read a local file.
     Get(String),
-    /// Read the macOS Calendar, asking macOS for access first when `ask`.
-    MacCalendar { ask: bool },
+    /// Read the events of the macOS Calendar starting in `[from, until)`,
+    /// asking macOS for access first when `ask`.
+    MacCalendar {
+        ask: bool,
+        from: DateTime<Utc>,
+        until: DateTime<Utc>,
+    },
 }
 
 #[derive(Debug, PartialEq)]
@@ -55,13 +60,11 @@ impl Net {
                             break;
                         }
                     }
-                    Job::MacCalendar { ask } => {
+                    Job::MacCalendar { ask, from, until } => {
                         // Asking waits for the user to answer macOS: never hold up the downloads.
                         let report = report.clone();
                         std::thread::spawn(move || {
-                            let now = Utc::now();
-                            let until = now + chrono::Duration::days(calendar::WINDOW_DAYS);
-                            let events = maccal::read(ask, now, until);
+                            let events = maccal::read(ask, from, until);
                             let _ = report.send((key, Answer::MacCalendar(events)));
                         });
                     }
@@ -76,8 +79,8 @@ impl Net {
         let _ = self.jobs.send((key, Job::Get(address)));
     }
 
-    pub fn mac_calendar(&self, key: String, ask: bool) {
-        let _ = self.jobs.send((key, Job::MacCalendar { ask }));
+    pub fn mac_calendar(&self, key: String, ask: bool, from: DateTime<Utc>, until: DateTime<Utc>) {
+        let _ = self.jobs.send((key, Job::MacCalendar { ask, from, until }));
     }
 
     /// The jobs that finished since the last call.

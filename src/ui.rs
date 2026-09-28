@@ -171,6 +171,21 @@ fn visible_tabs(labels: &[String], active: usize, width: usize) -> Range<usize> 
     shown
 }
 
+/// Rows before the one picked that stay in view while a list scrolls, so
+/// the earlier ones show there are more.
+const SCROLL_CONTEXT: usize = 2;
+
+/// The part of a list of `total` rows that fits in `visible`: all of it, or
+/// else the row picked near the top, below a few of the rows before it.
+fn scroll(total: usize, visible: usize, picked: usize) -> Range<usize> {
+    if total <= visible {
+        return 0..total;
+    }
+    let context = SCROLL_CONTEXT.min(visible.saturating_sub(1));
+    let first = picked.saturating_sub(context).min(total - visible);
+    first..first + visible
+}
+
 /// A line of text next to the digits: the place above them, the rest below.
 struct Info {
     line: Line<'static>,
@@ -831,7 +846,7 @@ fn render_keys(app: &App, now: DateTime<Utc>, area: Rect, buf: &mut Buffer) {
             None => &[],
         }
     } else if matches!(app.mode, Mode::Calendar(CalendarPanel::Status(_)))
-        && app.calendar.listed(now).any(|event| event.link.is_some())
+        && app.agenda(now).any(|event| event.link.is_some())
     {
         text.event_keys
     } else {
@@ -1227,20 +1242,30 @@ fn render_calendar(frame: &mut Frame, app: &App, panel: &CalendarPanel, now: Dat
                 _ => {}
             }
             lines.push(Line::raw(""));
-            let upcoming: Vec<_> = calendar.listed(now).collect();
-            if upcoming.is_empty() && calendar.updated.is_some() {
-                lines.push(Line::styled(format!(" {}", text.no_events), dim));
-                if calendar.mac {
-                    lines.push(Line::styled(format!(" {}", text.no_events_mac), dim));
+            let agenda: Vec<_> = app.agenda(now).collect();
+            let mut notes = Vec::new();
+            if agenda.iter().all(|event| event.start <= now) && calendar.updated.is_some() {
+                notes.push(Line::styled(format!(" {}", text.no_events), dim));
+                if calendar.mac && agenda.is_empty() {
+                    notes.push(Line::styled(format!(" {}", text.no_events_mac), dim));
                 }
             }
             // With links to open, each event shows where its link goes, at
             // the right while that leaves its title half the row, and the one
-            // Enter opens stands out.
-            let linked = upcoming.iter().any(|event| event.link.is_some());
-            let picked = (*selected).min(upcoming.len().saturating_sub(1));
+            // Enter opens stands out. Today's that already started come first,
+            // muted, and the list scrolls when the pane is too short for it.
+            let linked = agenda.iter().any(|event| event.link.is_some());
+            let picked = (*selected).min(agenda.len().saturating_sub(1));
             let width = usize::from(CALENDAR_WIDTH.min(frame.area().width).saturating_sub(2));
-            for (index, event) in upcoming.into_iter().enumerate() {
+            let rows = usize::from(frame.area().height.saturating_sub(2))
+                .saturating_sub(lines.len() + notes.len());
+            for index in scroll(agenda.len(), rows, picked) {
+                let event = agenda[index];
+                let (when_style, title_style) = if event.start <= now {
+                    (dim, dim)
+                } else {
+                    (Style::new().fg(palette.accent), Style::new())
+                };
                 let start = app.system.local_time(event.start);
                 let when = format!(
                     " {} {} ",
@@ -1258,8 +1283,8 @@ fn render_calendar(frame: &mut Frame, app: &App, panel: &CalendarPanel, now: Dat
                 let title = shorten(&event.title, room);
                 let gap = " ".repeat(room.saturating_sub(title.width()));
                 let line = Line::from(vec![
-                    Span::styled(when, Style::new().fg(palette.accent)),
-                    Span::raw(title),
+                    Span::styled(when, when_style),
+                    Span::styled(title, title_style),
                     Span::raw(gap),
                     Span::styled(site, dim),
                 ]);
@@ -1269,6 +1294,7 @@ fn render_calendar(frame: &mut Frame, app: &App, panel: &CalendarPanel, now: Dat
                     line
                 });
             }
+            lines.extend(notes);
         }
     }
     let input_rows = u16::from(input.is_some());
@@ -2047,17 +2073,33 @@ mod tests {
         })
     }
 
+    fn meeting(title: &str, start: DateTime<Utc>, link: Option<&str>) -> crate::calendar::Event {
+        crate::calendar::Event {
+            uid: title.to_lowercase(),
+            title: title.into(),
+            start,
+            link: link.map(str::to_owned),
+        }
+    }
+
+    /// Yesterday's retro and this morning's standup at 10:04, then
+    /// planning at 13:39 and lunch at 15:04, São Paulo time.
     fn with_meetings() -> App {
-        let mut app = with_event("Planning", now() + Duration::minutes(35));
-        app.calendar.events[0].link = Some("https://meet.google.com/abc-defg-hij".into());
-        app.calendar.events.push(crate::calendar::Event {
-            uid: "2".into(),
-            title: "Lunch".into(),
-            start: now() + Duration::hours(2),
-            link: None,
-        });
+        let mut app = with_event("Planning", now());
+        let meet = Some("https://meet.google.com/abc-defg-hij");
+        app.calendar.events = vec![
+            meeting("Retro", now() - Duration::days(1), meet),
+            meeting("Standup", now() - Duration::hours(3), meet),
+            meeting("Planning", now() + Duration::minutes(35), meet),
+            meeting("Lunch", now() + Duration::hours(2), None),
+        ];
         app.calendar.updated = Some(now());
         app
+    }
+
+    fn picked(buf: &Buffer, text: &str) -> bool {
+        let at = find_text(buf, text).unwrap();
+        buf[at].modifier.contains(Modifier::REVERSED)
     }
 
     #[test]
@@ -2069,10 +2111,6 @@ mod tests {
         assert!(text.contains("Fri 13:39 Planning"), "{text}");
         assert!(text.contains("meet.google.com"), "{text}");
         assert!(text.contains("↑↓ choose  Enter open link"), "{text}");
-        let picked = |buf: &Buffer, title| {
-            let at = find_text(buf, title).unwrap();
-            buf[at].modifier.contains(Modifier::REVERSED)
-        };
         assert!(picked(&buf, "Fri 13:39 Planning") && !picked(&buf, "Fri 15:04 Lunch"));
         app.on_key(KeyEvent::from(KeyCode::Down), now());
         let buf = draw(&app, 100, 30, now());
@@ -2080,12 +2118,72 @@ mod tests {
 
         // A long title gives way to where its link goes, down to half the
         // row; a narrower pane keeps the title.
-        app.calendar.events[0].title = "Quarterly planning ".repeat(6);
+        app.calendar.events[2].title = "Quarterly planning ".repeat(6);
         let text = screen(&draw(&app, 60, 30, now()));
         assert!(text.contains("…  meet.google.com"), "{text}");
         let text = screen(&draw(&app, 40, 30, now()));
         assert!(text.contains("13:39 Quarterly planning Quarter…"), "{text}");
         assert!(!text.contains("meet.google.com"), "{text}");
+    }
+
+    #[test]
+    fn lists_the_events_of_today_that_already_started_muted() {
+        let mut app = with_meetings();
+        app.on_key(KeyEvent::from(KeyCode::Char('g')), now());
+        let buf = draw(&app, 100, 30, now());
+        let text = screen(&buf);
+        assert!(!text.contains("Retro"), "not yesterday's: {text}");
+        let muted = |buf: &Buffer, text| {
+            let at = find_text(buf, text).unwrap();
+            buf[at].modifier.contains(Modifier::DIM)
+        };
+        assert!(muted(&buf, "Fri 10:04 Standup"), "{text}");
+        assert!(!muted(&buf, "Fri 13:39 Planning"));
+        assert!(
+            picked(&buf, "Fri 13:39 Planning"),
+            "opens on the next event"
+        );
+
+        app.on_key(KeyEvent::from(KeyCode::Up), now());
+        let buf = draw(&app, 100, 30, now());
+        assert!(picked(&buf, "Fri 10:04 Standup") && muted(&buf, "Fri 10:04 Standup"));
+        assert!(!picked(&buf, "Fri 13:39 Planning"));
+    }
+
+    #[test]
+    fn the_calendar_list_scrolls_to_the_event_picked() {
+        let mut app = with_meetings();
+        let meet = Some("https://meet.google.com/abc-defg-hij");
+        app.calendar.events = (0..6)
+            .map(|hour| {
+                meeting(
+                    &format!("Early {hour}"),
+                    now() - Duration::hours(6 - hour),
+                    meet,
+                )
+            })
+            .chain((0..10).map(|step| {
+                let start = now() + Duration::minutes(10 + 20 * step);
+                meeting(&format!("Later {step}"), start, meet)
+            }))
+            .collect();
+        app.on_key(KeyEvent::from(KeyCode::Char('g')), now());
+        // Room for 10 of the 16 events: the next one near the top, below
+        // two of those that already started.
+        let text = screen(&draw(&app, 100, 16, now()));
+        for shown in ["Early 4", "Early 5", "Later 0", "Later 7"] {
+            assert!(text.contains(shown), "{shown}: {text}");
+        }
+        assert!(
+            !text.contains("Early 3") && !text.contains("Later 8"),
+            "{text}"
+        );
+        for _ in 0..6 {
+            app.on_key(KeyEvent::from(KeyCode::Up), now());
+        }
+        let buf = draw(&app, 100, 16, now());
+        assert!(picked(&buf, "Fri 07:04 Early 0"), "{}", screen(&buf));
+        assert!(!screen(&buf).contains("Later 4"));
     }
 
     #[test]
