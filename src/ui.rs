@@ -16,7 +16,7 @@ use crate::app::{AlarmPanel, App, CalendarPanel, CalendarSource, Mode, Search, T
 use crate::calendar;
 use crate::i18n::Keys;
 use crate::maccal::Access;
-use crate::theme::THEMES;
+use crate::theme::{Paint, THEMES};
 use crate::weather::{self, Hour};
 use crate::weather_fx;
 use crate::worldmap::{MapColors, Marker, WorldMap};

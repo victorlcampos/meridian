@@ -1026,7 +1026,7 @@ impl Overlay<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::theme::THEMES;
+    use crate::theme::{Paint, THEMES};
 
     /// Tokyo Night, which blends, and the terminal's colors, which do not.
     fn palettes() -> [Palette; 2] {

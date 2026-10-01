@@ -4,6 +4,7 @@ use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
+pub use cerne::text::fold;
 use chrono_tz::Tz;
 
 const CITIES: &str = include_str!("../assets/cities.tsv");
@@ -191,18 +192,6 @@ fn parse_line(line: &'static str, countries: &HashMap<&str, &'static str>) -> Op
     })
 }
 
-/// Lower-case ASCII words separated by single spaces: "Saint-Étienne" → "saint etienne".
-/// Apostrophes join words ("N'Djamena" → "ndjamena").
-pub fn fold(text: &str) -> String {
-    let ascii = deunicode::deunicode(text).replace('\'', "");
-    ascii
-        .split(|c: char| !c.is_ascii_alphanumeric())
-        .filter(|word| !word.is_empty())
-        .map(str::to_ascii_lowercase)
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -214,14 +203,6 @@ mod tests {
     #[test]
     fn loads_every_embedded_city() {
         assert_eq!(db().entries.len(), CITIES.lines().count());
-    }
-
-    #[test]
-    fn folds_accents_case_and_punctuation() {
-        assert_eq!(fold("São Paulo"), "sao paulo");
-        assert_eq!(fold("  Saint-Étienne "), "saint etienne");
-        assert_eq!(fold("N'Djamena"), "ndjamena");
-        assert_eq!(fold("Zürich"), "zurich");
     }
 
     #[test]

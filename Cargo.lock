@@ -213,6 +213,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "cerne"
+version = "0.1.0"
+source = "git+https://github.com/victorlcampos/cerne?tag=v0.1.0#04ed774aada318cee60ac7ad0ec7faa5667fd791"
+dependencies = [
+ "deunicode",
+ "ratatui",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "cfg-if"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -967,10 +978,10 @@ name = "meridian"
 version = "0.1.0"
 dependencies = [
  "block2",
+ "cerne",
  "chrono",
  "chrono-tz",
  "clap",
- "deunicode",
  "iana-time-zone",
  "libc",
  "objc2",

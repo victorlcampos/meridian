@@ -15,7 +15,7 @@ use crate::maccal::{self, Access};
 use crate::net::{Answer, Net};
 use crate::solar::{self, Light};
 use crate::state::{SavedAlarm, SavedCity, State};
-use crate::theme::{self, Palette, THEMES};
+use crate::theme::{self, Paint, Palette, THEMES};
 use crate::weather::{self, Forecast};
 use crate::weather_fx::{Fx, Scene};
 use crate::worldmap::MapStyle;

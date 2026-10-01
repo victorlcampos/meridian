@@ -12,10 +12,10 @@ categories = ["command-line-utilities"]
 exclude = ["tools/.cache"]
 
 [dependencies]
+cerne = { git = "https://github.com/victorlcampos/cerne", tag = "v0.1.0", features = ["store", "tui"] }
 chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = "0.10"
 clap = { version = "4", features = ["derive"] }
-deunicode = "1"
 iana-time-zone = "0.1.65"
 ratatui = "0.30"
 rrule = "0.14"
