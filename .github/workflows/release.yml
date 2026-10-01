@@ -1,0 +1,21 @@
+name: Release
+
+# Pushing a tag with the version in Cargo.toml (git tag v0.2.0 && git push
+# origin v0.2.0) builds meridian for each system and publishes the release
+# that `meridian update` installs.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    uses: victorlcampos/cerne/.github/workflows/release-cli.yml@v0.1.0
+    with:
+      binary: meridian
+      # macOS keeps the calendar access it gave meridian across versions
+      # signed under this identifier (see "Mac Calendar" in the README).
+      macos-identifier: io.github.victorlcampos.meridian

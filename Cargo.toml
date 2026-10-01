@@ -1,6 +1,6 @@
 [package]
 name = "meridian"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.88"
 description = "Responsive terminal clock: city tabs, ASCII world map, 50 themes, weather, calendar reminders and blinking alarms"
@@ -12,7 +12,7 @@ categories = ["command-line-utilities"]
 exclude = ["tools/.cache"]
 
 [dependencies]
-cerne = { git = "https://github.com/victorlcampos/cerne", tag = "v0.1.0", features = ["store", "tui"] }
+cerne = { git = "https://github.com/victorlcampos/cerne", tag = "v0.1.0", features = ["store", "tui", "update"] }
 chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = "0.10"
 clap = { version = "4", features = ["derive"] }

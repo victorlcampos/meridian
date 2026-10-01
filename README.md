@@ -127,20 +127,39 @@ you pick.
 
 ## Install
 
+Download the archive for your system from the [latest
+release](https://github.com/victorlcampos/meridian/releases/latest): macOS
+(Apple silicon and Intel), Linux (x86_64 and ARM) or Windows. Unpack it and
+put `meridian` somewhere on your `PATH`, such as `~/.local/bin`. On macOS, a
+file a browser downloaded stays quarantined until you allow it: run `xattr -d
+com.apple.quarantine meridian` once. The macOS builds come signed the way the
+Mac Calendar needs (below).
+
+Or build it, with Rust 1.88 or newer ([rustup.rs](https://rustup.rs)):
+
 ```sh
 cargo install --git https://github.com/victorlcampos/meridian
 ```
 
-Needs Rust 1.88 or newer ([rustup.rs](https://rustup.rs)).
-
-On macOS, sign the installed binary once more (after each update) so macOS
-can read the reason meridian gives when it asks for your calendars, and
-recognizes it as the same app from one update to the next:
+On macOS, sign what you built once more (after each build) so macOS can read
+the reason meridian gives when it asks for your calendars, and recognizes it
+as the same app from one version to the next:
 
 ```sh
 codesign --force --sign - --identifier io.github.victorlcampos.meridian \
   -r='designated => identifier "io.github.victorlcampos.meridian"' ~/.cargo/bin/meridian
 ```
+
+### Update
+
+```sh
+meridian update           # installs the latest release over this meridian
+meridian update --check   # only tells whether there is a newer one
+```
+
+The new version replaces the old one only after it matches the SHA-256
+published with the release and reports the right version. On macOS it comes
+signed under the same identifier, so the calendar access carries over.
 
 ## Usage
 
@@ -245,8 +264,9 @@ macOS normally judges calendar access for the terminal a program runs in, and
 refuses without asking when that terminal is built with the hardened runtime
 and no calendar entitlement (cmux, for instance). So meridian reads the
 calendar through a helper copy of itself that macOS treats as its own app,
-with the reason embedded in the binary; that is what the `codesign` step
-above binds. It also tells macOS to know meridian by that name rather than
+with the reason embedded in the binary; that is what the signature binds
+(the releases' own, or the `codesign` step above for a build of your own). It
+also tells macOS to know meridian by that name rather than
 by the exact binary, or every update would lose the access you gave: the
 calendar would go quiet until you allowed it again (meridian then says
 *Calendar without access: press g*).
@@ -334,7 +354,7 @@ do próximo evento ficam, apagados, os de hoje que já começaram. Alarmes
 quando tocam, a tela pisca até você apertar uma tecla (`z` adia 5 minutos).
 Tudo é salvo a cada mudança em `~/.config/meridian/state.json` e volta mesmo
 depois de o computador desligar. A interface fica em português quando `$LANG`
-começa com `pt`.
+começa com `pt`. `meridian update` instala a versão mais nova.
 
 ## License
 

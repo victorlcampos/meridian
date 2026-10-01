@@ -22,7 +22,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use chrono::Utc;
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self, Event, KeyEventKind};
 use ratatui::style::Color;
@@ -38,8 +38,11 @@ use crate::zone::Zone;
 /// Everything you set is saved, and the layout fits anything from a full
 /// screen to a small tiling pane.
 #[derive(Parser)]
-#[command(version, about)]
+#[command(version, about, args_conflicts_with_subcommands = true)]
 struct Cli {
+    #[command(subcommand)]
+    command: Option<Command>,
+
     /// Open a tab with a city's time (repeatable): "Tokyo", "São Paulo", "Portland, Maine".
     /// The first one given is shown first
     #[arg(short = 'c', long = "city", value_name = "CITY")]
@@ -96,12 +99,26 @@ struct Cli {
     calendar_helper: Vec<String>,
 }
 
+#[derive(Subcommand)]
+enum Command {
+    /// Update meridian to the latest release
+    Update {
+        /// Only tell whether a newer version is out
+        #[arg(long)]
+        check: bool,
+    },
+}
+
 fn parse_color(name: &str) -> Result<Color, String> {
     name.parse().map_err(|_| format!("unknown color {name:?}"))
 }
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    if let Some(Command::Update { check }) = cli.command {
+        let version = env!("CARGO_PKG_VERSION");
+        return cerne::update::run("victorlcampos/meridian", "meridian", version, check);
+    }
     if !cli.calendar_helper.is_empty() {
         return maccal::serve(&cli.calendar_helper);
     }
