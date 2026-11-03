@@ -2,8 +2,9 @@
 
 A terminal clock that fits any window. Big digits, a tab per city with a world
 map showing where it is (and where it is night), the weather for the next
-hours, your next calendar event, 50 color themes and alarms that make the
-screen blink. Built for tiling window managers: resize the pane and the layout
+hours, your next calendar event, 50 color themes, alarms that make the screen
+blink and a pager: messages sent from any terminal scroll across it, emoticons
+as ASCII art. Built for tiling window managers: resize the pane and the layout
 follows. Everything you set is saved as you go.
 
 ```text
@@ -118,6 +119,11 @@ you pick.
   alarm rings the whole screen flashes and the terminal bell rings, which
   tiling window managers show as an urgent window. Any key stops it; `z`
   snoozes for 5 minutes. Alarms can repeat daily.
+- **Pager.** `meridian page "Deploy finished"`, from any terminal or script,
+  sends a message to the meridian running: it beeps and the message scrolls
+  across the bottom of the screen until any key dismisses it, as with an
+  alarm. An emoticon on its own, such as `:)`, `<3`, `(y)` or 👍, passes by
+  as ASCII art, as large as the pane allows.
 - **Responsive.** The digits grow and shrink with the window. The map goes
   under or beside the clock, whichever uses the pane best, and steps aside when
   there is no room. The time stays readable down to a 20×5 pane.
@@ -170,6 +176,7 @@ meridian -c Tokyo -c London -c "São Paulo"  # a tab per city
 meridian --theme "tokyo night"              # see --list-themes
 meridian --alarm 07:30 --alarm "+25m Tea"   # alarms from the command line
 meridian --calendar "https://calendar.google.com/calendar/ical/…/basic.ics"
+meridian page "Deploy finished"             # from another terminal: see Pager
 ```
 
 Command-line options work as if you did the same in the app, so they are
@@ -210,7 +217,8 @@ for the Mac Calendar `o` opens the privacy setting and `a` the Internet
 Accounts.
 
 While an alarm or reminder rings: any key stops it, `z` snoozes for 5 minutes
-and, for an event with a link, `o` opens it.
+and, for an event with a link, `o` opens it. While a message from `meridian
+page` scrolls by, any key dismisses it.
 
 ### Alarm times
 
@@ -291,12 +299,99 @@ Forecasts come from [Open-Meteo](https://open-meteo.com/) (free, no key),
 refreshed every 30 minutes for each city tab and for your city (`W`), whose
 weather local time shows.
 
+## Pager
+
+`meridian page` (or `meridian bip`) sends a message to the meridian running,
+as to a pager:
+
+```sh
+meridian page "Deploy finished"             # scrolls until any key dismisses it
+meridian page ":)"                          # an emoticon alone passes by as ASCII art
+meridian page --for 10m "Coffee is ready"   # goes away by itself after 10 minutes
+make test && meridian page "(y)" || meridian page ":("
+echo "Backup done" | meridian page          # the message can come from a pipe
+meridian page --clear                       # takes the message down
+```
+
+Within a second meridian beeps, which tiling window managers show as an
+urgent window, and the message scrolls across the bottom of the screen, after
+the time it came, until a key is pressed there: as with a ringing alarm, any
+key dismisses it and does nothing else. A new message takes the place of the
+one on screen. Copies running side by side all show it, and a key in any of
+them dismisses it in all; with no meridian running, the message waits in the
+state file for the next one to start.
+
+An emoticon on its own, or a few of them, passes by as ASCII art: large where
+the pane has room, smaller in a small pane and as one line of ASCII in a tiny
+one, so an emoji always shows in ASCII too.
+
+<details>
+<summary><code>meridian page ":)"</code> in an 80×24 pane</summary>
+
+```text
+                                     :  .::++++#####    .:.   .   .:::.
+                             ..+###+####+#::+..##+:..   ++++:+###############+++
+                               ::.::#####+:+#+...    ::+++################+:::.
+         Local time                 .#####+##..      .#####+#############+:
+                                     +#####:         +##:::############+...
+ ▄█  █▀█ ▄ █ █ █ █ ▄ █▀█ █ █          .##....       +##########:+######:
+  █  █ █ ▄ ▀▀█ ▀▀█ ▄ █ █ ▀▀█            .::.:.      +#######++.  +..+# ..
+ ▀▀▀ ▀▀▀     ▀   ▀   ▀▀▀   ▀               +###:.    :.:#####.   .  :.+:...
+                                           +#####:      +###.        ....:+.
+   Tue, Nov 3 · UTC-03:00                   +###+ ☼     +##+::.       .+###+ .
+                                            +##:        .#+.          .#++##.
+                                            #+.                           .:  :.
+                                           .+
+
+                                            .-'''''''-.
+                                          .'           '.
+                                         /   _       _   \
+                                        |   (o)     (o)   |
+                                        |                 |
+                                        |   \         /   |
+                                         \   '._____.'   /
+                                          '.           .'
+                                            '-._____.-'
+ any key dismiss
+```
+
+</details>
+
+| Emoticon | Typed | Emoji |
+| --- | --- | --- |
+| Smile | `:)` `:-)` `=)` | 🙂 ☺️ |
+| Happy | `^_^` `^^` | 😊 😌 |
+| Grin | `:D` `:-D` `=D` | 😀 😃 😁 😄 |
+| Laugh | `xD` `XD` | 😆 😂 🤣 |
+| Wink | `;)` `;-)` | 😉 |
+| Sad | `:(` `:-(` `=(` | 🙁 ☹️ 😞 😟 😔 |
+| Crying | `:'(` `T_T` `;_;` | 😢 😭 |
+| Surprise | `:O` `:o` `O_O` | 😮 😯 😲 😱 😳 |
+| Tongue | `:P` `:p` `;P` | 😛 😜 😝 😋 |
+| Cool | `B)` `8)` | 😎 |
+| Angry | `>:(` `>_<` | 😠 😡 🤬 😤 |
+| Kiss | `:*` `:-*` | 😘 😗 😙 😚 💋 |
+| Neutral | `:\|` `-_-` | 😐 😑 😶 |
+| Unsure | `:/` `:\` | 😕 🫤 🤨 🤔 |
+| Heart | `<3` | ❤️ and the other hearts, 😍 🥰 |
+| Broken heart | `</3` | 💔 |
+| Thumbs up | `(y)` `+1` | 👍 |
+| Thumbs down | `(n)` `-1` | 👎 |
+| Cheer | `\o/` | 🎉 🎊 🙌 🥳 |
+| Wave | `o/` `\o` | 👋 |
+
+Quote the message: shells take `:)`, `<3` or `?` for their own syntax. One
+that starts with a hyphen goes after `--`: `meridian page -- -_-`. A message
+is one line of up to 500 characters. To page a meridian started with a state
+file of its own, give it with `--state`.
+
 ## Saved state
 
 Everything lives in `~/.config/meridian/state.json` (or
 `$XDG_CONFIG_HOME/meridian/state.json`), rewritten on every change, all at
 once, so a crash or a power cut leaves either the old file or the new one. A
 file that cannot be read is kept as `state.json.broken` rather than lost.
+`meridian page` leaves its message there too, and changes nothing else.
 
 ## Tiling window managers
 
@@ -352,6 +447,12 @@ lista do `g`, `↑` `↓` escolhem um evento e `Enter` abre o link dele, e acima
 do próximo evento ficam, apagados, os de hoje que já começaram. Alarmes
 (`a`) aceitam `07:30`, `7h30` ou `+10m` com um nome opcional;
 quando tocam, a tela pisca até você apertar uma tecla (`z` adia 5 minutos).
+Como num bipe, `meridian page "Deploy terminado"` (ou `meridian bip`), de
+qualquer terminal ou script, manda uma mensagem ao meridian aberto: ele apita
+e ela passa na parte de baixo da tela até qualquer tecla dispensá-la, como um
+alarme; um emoticon sozinho, como `:)`, `<3`, `(y)` ou 👍, passa como arte
+ASCII. Com `--for 10m` a mensagem sai sozinha depois de 10 minutos, e
+`--clear` a apaga.
 Tudo é salvo a cada mudança em `~/.config/meridian/state.json` e volta mesmo
 depois de o computador desligar. A interface fica em português quando `$LANG`
 começa com `pt`. `meridian update` instala a versão mais nova.

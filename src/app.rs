@@ -13,6 +13,7 @@ use crate::cities::{self, City, fold};
 use crate::i18n::Lang;
 use crate::maccal::{self, Access};
 use crate::net::{Answer, Net};
+use crate::pager::Page;
 use crate::solar::{self, Light};
 use crate::state::{SavedAlarm, SavedCity, State};
 use crate::theme::{self, Paint, Palette, THEMES};
@@ -270,6 +271,8 @@ pub struct App {
     pub open: Box<dyn Fn(&str) -> bool>,
     pub alarms: Alarms,
     pub ringing: Vec<Alarm>,
+    /// The message sent with `meridian page`, until dismissed or due to go.
+    pub page: Option<Page>,
     pub mode: Mode,
     pub quit: bool,
     bell: bool,
@@ -299,6 +302,7 @@ impl App {
             open: Box::new(crate::desktop::open),
             alarms: Alarms::default(),
             ringing: Vec::new(),
+            page: None,
             mode: Mode::Clock,
             quit: false,
             bell: false,
@@ -380,12 +384,14 @@ impl App {
                     link: alarm.link.clone(),
                 })
                 .collect(),
+            page: self.page.clone(),
         }
     }
 
-    /// Puts back a saved state. With `with_active` the tab on screen comes back
-    /// too; otherwise the city on screen stays, wherever its tab moved.
-    pub fn restore(&mut self, state: &State, with_active: bool) {
+    /// Puts back a saved state. At the start the tab on screen comes back
+    /// too; a state another copy saved keeps the city on screen, wherever
+    /// its tab moved, and beeps for the page it brings, if new.
+    pub fn restore(&mut self, state: &State, at_start: bool) {
         if !matches!(self.mode, Mode::Themes(_))
             && let Some(theme) = theme::find(&state.theme)
         {
@@ -423,7 +429,7 @@ impl App {
                 tabs.push(Tab { city: Some(city) });
             }
         }
-        let active = match (with_active, on_screen) {
+        let active = match (at_start, on_screen) {
             (true, _) => state.active,
             (false, None) => 0,
             (false, Some(city)) => tabs
@@ -453,6 +459,19 @@ impl App {
                 link: saved.link.clone(),
             });
         }
+
+        // A page just sent beeps here once, like a pager.
+        if !at_start && state.page.is_some() && state.page != self.page {
+            self.bell = true;
+        }
+        self.page = state.page.clone();
+    }
+
+    /// The page to show: the one sent with `meridian page`, unless it is
+    /// due to go.
+    pub fn page_on_screen(&self, now: DateTime<Utc>) -> Option<&Page> {
+        let page = self.page.as_ref()?;
+        page.until.is_none_or(|until| now < until).then_some(page)
     }
 
     pub fn tab(&self) -> &Tab {
@@ -757,6 +776,10 @@ impl App {
     /// downloads going.
     pub fn tick(&mut self, now: DateTime<Utc>) {
         self.download(now);
+        // A page sent for a while goes away by itself, from the file too.
+        if self.page.is_some() && self.page_on_screen(now).is_none() {
+            self.page = None;
+        }
         let mut due = self.alarms.take_due(now);
         due.extend(self.due_reminders(now));
         if !due.is_empty() {
@@ -811,6 +834,12 @@ impl App {
                 _ => {}
             }
             self.ringing.clear();
+            return;
+        }
+        // Like an alarm, a page on the clock goes with any key, which does
+        // nothing else; it goes from every copy.
+        if matches!(self.mode, Mode::Clock) && self.page_on_screen(now).is_some() {
+            self.page = None;
             return;
         }
         self.mode = match std::mem::replace(&mut self.mode, Mode::Clock) {
@@ -2139,5 +2168,107 @@ END:VCALENDAR
         let (key, _) = jobs.try_recv().unwrap();
         assert_eq!(key, weather::key(&city("Belo Horizonte")));
         assert!(app.weather_of(&city("Belo Horizonte")).unwrap().pending());
+    }
+
+    fn page(text: &str, until: Option<DateTime<Utc>>) -> Page {
+        Page {
+            text: text.into(),
+            sent: now(),
+            until,
+        }
+    }
+
+    #[test]
+    fn a_page_from_another_copy_beeps_once() {
+        let mut app = app();
+        let mut there = self::app();
+        there.page = Some(page("Deploy finished", None));
+        app.restore(&there.state(), false);
+        let shown = app.page_on_screen(now()).map(|page| page.text.as_str());
+        assert_eq!(shown, Some("Deploy finished"));
+        assert!(app.take_bell());
+        app.restore(&there.state(), false);
+        assert!(!app.take_bell(), "the same page beeps once");
+
+        there.page = Some(page(":)", None));
+        app.restore(&there.state(), false);
+        assert!(app.take_bell(), "a new one beeps again");
+        assert_eq!(app.state().page, there.page, "and is saved");
+    }
+
+    #[test]
+    fn any_key_dismisses_the_page_and_does_nothing_else() {
+        let keys = [
+            KeyCode::Char('q'),
+            KeyCode::Char('s'),
+            KeyCode::Char('a'),
+            KeyCode::Right,
+            KeyCode::Esc,
+            KeyCode::Enter,
+        ];
+        for key in keys {
+            let mut app = two_cities();
+            app.page = Some(page("Lunch is ready", None));
+            press(&mut app, key);
+            assert!(app.page.is_none() && app.state().page.is_none(), "{key:?}");
+            assert!(!app.quit && app.show_seconds && app.active == 2, "{key:?}");
+            assert!(matches!(app.mode, Mode::Clock), "{key:?}");
+        }
+        let mut app = app();
+        app.page = Some(page("Lunch is ready", None));
+        app.on_key(
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            now(),
+        );
+        assert!(app.quit, "Ctrl+C still quits");
+    }
+
+    /// Two city tabs, the second on screen.
+    fn two_cities() -> App {
+        let mut app = app();
+        app.open_city(city("Tokyo"));
+        app.open_city(city("London"));
+        app
+    }
+
+    #[test]
+    fn a_pop_up_keeps_its_keys_while_a_page_shows() {
+        let mut app = app();
+        press(&mut app, KeyCode::Char('t'));
+        app.page = Some(page("Lunch is ready", None));
+        press(&mut app, KeyCode::Down);
+        assert_eq!(theme_name(&app), "Tokyo Night", "the theme list moved");
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.mode, Mode::Clock));
+        assert!(app.page.is_some(), "Esc closed the theme list only");
+        press(&mut app, KeyCode::Char('t'));
+        assert!(app.page.is_none() && matches!(app.mode, Mode::Clock));
+    }
+
+    #[test]
+    fn a_ringing_alarm_takes_the_key_before_the_page() {
+        let mut app = app();
+        app.page = Some(page("Lunch is ready", None));
+        app.add_alarm(When::In(Duration::seconds(1)), String::new(), now());
+        app.tick(now() + Duration::seconds(1));
+        press(&mut app, KeyCode::Esc);
+        assert!(app.ringing.is_empty() && app.page.is_some());
+    }
+
+    #[test]
+    fn a_page_sent_for_a_while_goes_away_by_itself() {
+        let mut app = app();
+        app.page = Some(page("Coffee", Some(now() + Duration::minutes(10))));
+        app.tick(now() + Duration::minutes(9));
+        assert!(app.page_on_screen(now() + Duration::minutes(9)).is_some());
+        assert!(app.page_on_screen(now() + Duration::minutes(10)).is_none());
+        let later = now() + Duration::minutes(10);
+        app.on_key(KeyEvent::from(KeyCode::Char('s')), later);
+        assert!(!app.show_seconds, "a page gone takes no key");
+        app.tick(later);
+        assert!(
+            app.page.is_none() && app.state().page.is_none(),
+            "and from the file"
+        );
     }
 }
