@@ -1,4 +1,5 @@
-//! Drawing: the tab bar, the clock, the world map, the key hints and the pop-ups.
+//! Drawing: the tab bar, the clock, the world map, the page's band, the key
+//! hints and the pop-ups.
 
 use std::ops::Range;
 
@@ -21,14 +22,21 @@ use crate::weather::{self, Hour};
 use crate::weather_fx;
 use crate::worldmap::{MapColors, Marker, WorldMap};
 use crate::zone::format_offset;
-use crate::{clockface, layout, solar};
+use crate::{clockface, layout, pager, solar};
 
 /// Draws the whole screen. Returns how often, in milliseconds, the picture
-/// changes by itself: the frame period of a live weather scene on screen.
+/// changes by itself: the frame period of a live weather scene on screen,
+/// or of a page scrolling by, whichever is quicker.
 pub fn render(frame: &mut Frame, app: &App, now: DateTime<Utc>) -> Option<u64> {
     let area = frame.area();
     let palette = app.palette();
-    let screen = layout::split(area, app.show_map, app.shown_tabs().len() > 1);
+    let page = app.page_on_screen(now);
+    let screen = layout::split(
+        area,
+        app.show_map,
+        app.shown_tabs().len() > 1,
+        page.map_or(&[], pager::heights),
+    );
     let buf = frame.buffer_mut();
     buf.set_style(area, palette.base());
     if let Some(tabs) = screen.tabs {
@@ -36,7 +44,12 @@ pub fn render(frame: &mut Frame, app: &App, now: DateTime<Utc>) -> Option<u64> {
     }
     // The tab wants its map but the window has no room for it.
     let map_no_room = app.show_map && screen.map.is_none();
-    let animation = render_clock(app, now, screen.clock, map_no_room, buf);
+    let mut animation = render_clock(app, now, screen.clock, map_no_room, buf);
+    if let (Some(band), Some(page)) = (screen.pager, page) {
+        let label = pager::label(page, app.system, app.lang, now);
+        let pace = pager::draw(page, &label, band, &palette, now, buf);
+        animation = animation.into_iter().chain(pace).min();
+    }
     if let Some(map) = screen.map {
         // A city tab marks its city; the local tab marks every city with a tab.
         let cities = match app.city() {
@@ -857,6 +870,8 @@ fn render_keys(app: &App, now: DateTime<Utc>, area: Rect, buf: &mut Buffer) {
     let text = app.lang.text();
     let keys: Keys = if !app.ringing.is_empty() {
         text.ringing_keys
+    } else if matches!(app.mode, Mode::Clock) && app.page_on_screen(now).is_some() {
+        text.page_keys
     } else {
         match &app.mode {
             Mode::Clock => text.clock_keys,
@@ -1469,6 +1484,17 @@ mod tests {
         let mut calendar = with_meetings();
         calendar.on_key(KeyEvent::from(KeyCode::Char('g')), now());
         apps.push(calendar);
+        apps.push(with_page("Reunião às 15h na sala 3 🚀"));
+        apps.push(with_page("👍 ❤️ \\o/"));
+        // The help open as a page comes in.
+        let mut paged = with_city("Tokyo");
+        paged.on_key(KeyEvent::from(KeyCode::Char('?')), now());
+        paged.page = Some(crate::pager::Page {
+            text: "<3".into(),
+            sent: now() - Duration::seconds(3),
+            until: None,
+        });
+        apps.push(paged);
         for mode in 0..3 {
             let mut app = with_city("Auckland");
             app.add_alarm(When::In(Duration::minutes(3)), "Tea".into(), now());
@@ -2028,7 +2054,7 @@ mod tests {
         app.weather_fx = Fx::Live;
         app.fx_temperature = true;
         let buf = draw(&app, 100, 30, now());
-        let clock = layout::split(Rect::new(0, 0, 100, 30), false, false).clock;
+        let clock = layout::split(Rect::new(0, 0, 100, 30), false, false, &[]).clock;
         let laid = laid_out(&app, clock);
         let find = |wanted| laid.iter().find(|(_, kind)| *kind == wanted).unwrap().0;
         let (scene, label) = (find('s'), find('l'));
@@ -2400,5 +2426,73 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("Enter asks macOS"), "{text}");
+    }
+
+    fn with_page(text: &str) -> App {
+        let mut app = app();
+        app.page = Some(crate::pager::Page {
+            text: text.into(),
+            sent: now(),
+            until: None,
+        });
+        app
+    }
+
+    fn row(buf: &Buffer, y: u16) -> String {
+        (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect()
+    }
+
+    #[test]
+    fn scrolls_a_page_right_above_the_key_hints() {
+        let later = now() + Duration::seconds(5);
+        let buf = draw(&with_page("Deploy finished"), 80, 24, later);
+        // Sent at 13:04 in the computer's time, it entered fifty columns ago
+        // and the next pass follows a third of the band behind.
+        let band = format!(
+            "{}13:04 Deploy finished{}13:",
+            " ".repeat(30),
+            " ".repeat(26)
+        );
+        assert_eq!(row(&buf, 22), band);
+        let footer = row(&buf, 23);
+        assert!(footer.contains("any key dismiss"), "{footer}");
+        assert!(!footer.contains("c city"), "keys do nothing else: {footer}");
+        assert!(screen(&buf).contains('█'), "the clock stays");
+
+        let mut portuguese = with_page("Almoço pronto");
+        portuguese.lang = Lang::Pt;
+        let footer = row(&draw(&portuguese, 80, 24, later), 23);
+        assert!(footer.contains("qualquer tecla dispensar"), "{footer}");
+    }
+
+    #[test]
+    fn an_emoticon_alone_passes_by_in_ascii_art() {
+        let grin = with_page("😀");
+        let later = now() + Duration::seconds(5);
+        let large = screen(&draw(&grin, 80, 24, later));
+        assert!(large.contains("|   (o)     (o)   |"), "{large}");
+        assert!(large.contains(r"|   \_________/   |"), "{large}");
+        assert!(large.contains('█'), "under the clock: {large}");
+        assert!(!large.contains('😀'), "{large}");
+
+        let small = screen(&draw(&grin, 60, 12, later));
+        assert!(small.contains(r"/  o   o  \"), "{small}");
+        let text = screen(&draw(&grin, 40, 6, later));
+        assert!(text.contains("13:04 :D"), "no room to draw it: {text}");
+    }
+
+    #[test]
+    fn a_page_on_screen_sets_the_pace() {
+        let pace = |app: &App, width, height| {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            let mut animation = None;
+            terminal
+                .draw(|frame| animation = render(frame, app, now()))
+                .unwrap();
+            animation
+        };
+        assert_eq!(pace(&with_page("Hi"), 80, 24), Some(100));
+        assert_eq!(pace(&app(), 80, 24), None);
+        assert_eq!(pace(&with_page("Hi"), 80, 1), None, "no room for it");
     }
 }

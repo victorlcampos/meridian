@@ -108,7 +108,7 @@ fn parse_time(token: &str) -> Option<NaiveTime> {
 }
 
 /// "10" (minutes), "90s", "10m", "1h", "1h30", "2m30s". Up to a week.
-fn parse_delay(text: &str) -> Option<Duration> {
+pub fn parse_delay(text: &str) -> Option<Duration> {
     let mut total: i64 = 0;
     let mut digits = String::new();
     let mut last_unit = None;

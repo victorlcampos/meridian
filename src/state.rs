@@ -1,14 +1,18 @@
 //! What meridian remembers between runs: city tabs, theme, map, seconds and
 //! alarms, in one JSON file saved on every change (cerne's store). Copies
-//! running side by side share the file and pick up each other's changes.
+//! running side by side share the file and pick up each other's changes,
+//! and so does the message `meridian page` leaves there.
 
-use std::path::PathBuf;
+use std::fs;
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
 
 use cerne::store::{Origin, Persist};
 use chrono::{DateTime, NaiveTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::app::App;
+use crate::pager::Page;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -45,6 +49,9 @@ pub struct State {
     pub active: usize,
     pub cities: Vec<SavedCity>,
     pub alarms: Vec<SavedAlarm>,
+    /// The message sent with `meridian page`, until it is dismissed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub page: Option<Page>,
 }
 
 impl Default for State {
@@ -67,6 +74,7 @@ impl Default for State {
             active: 0,
             cities: Vec::new(),
             alarms: Vec::new(),
+            page: None,
         }
     }
 }
@@ -137,6 +145,63 @@ pub type Store = cerne::store::Store<State>;
 /// `$XDG_CONFIG_HOME/meridian/state.json`, or `~/.config/...`, or `%APPDATA%\...`.
 pub fn default_path() -> Option<PathBuf> {
     cerne::store::default_path("meridian")
+}
+
+/// Puts `page` in the state file at `path`, or takes the one there down,
+/// and leaves the rest of the file as it was: the meridian running picks it
+/// up within a second, and one started later finds it there. A file that is
+/// not a state is left alone.
+pub fn send_page(path: &Path, page: Option<&Page>) -> io::Result<()> {
+    let not_a_state = |detail: String| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("not a meridian state file ({detail})"),
+        )
+    };
+    let mut state = match fs::read_to_string(path) {
+        Ok(text) => serde_json::from_str(&text).map_err(|error| not_a_state(error.to_string()))?,
+        // No file, no page to take down.
+        Err(error) if error.kind() == io::ErrorKind::NotFound && page.is_none() => return Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            serde_json::Value::Object(serde_json::Map::new())
+        }
+        Err(error) => return Err(error),
+    };
+    let Some(fields) = state.as_object_mut() else {
+        return Err(not_a_state("no fields".into()));
+    };
+    if page.is_none() && !fields.contains_key("page") {
+        return Ok(());
+    }
+    match page {
+        Some(page) => {
+            let page = serde_json::to_value(page).map_err(io::Error::other)?;
+            fields.insert("page".into(), page);
+        }
+        None => {
+            fields.remove("page");
+        }
+    }
+    let text = serde_json::to_string_pretty(&state).map_err(io::Error::other)? + "\n";
+    write_atomically(path, &text)
+}
+
+/// Writes `text` to a file beside `path`, renamed over it once whole, as
+/// the store does: the copies reading it never see half of it, and, as it
+/// can hold the calendar's secret address, only its owner can read it.
+fn write_atomically(path: &Path, text: &str) -> io::Result<()> {
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir)?;
+    }
+    let temporary = path.with_extension(format!("json.{}.tmp", std::process::id()));
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let mut file = options.open(&temporary)?;
+    file.write_all(text.as_bytes())?;
+    file.sync_all()?;
+    fs::rename(&temporary, path)
 }
 
 /// The tab on screen is restored only at start: copies running side by side
@@ -310,5 +375,76 @@ mod tests {
             text.contains(r#""map":false"#) && !text.contains("local_map"),
             "{text}"
         );
+    }
+
+    fn lunch() -> Page {
+        Page {
+            text: "Lunch is ready".into(),
+            sent: now(),
+            until: None,
+        }
+    }
+
+    fn json(path: &Path) -> serde_json::Value {
+        serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn a_page_from_the_command_line_reaches_the_copy_running() {
+        let path = scratch("page");
+        let (mut running, mut store) = open(&path);
+        running.open_city(city("Tokyo"));
+        running.add_alarm(When::In(Duration::minutes(5)), "Tea".into(), now());
+        store.sync(&mut running).unwrap();
+        let before = json(&path);
+        assert!(before.get("page").is_none(), "no page, no field");
+
+        send_page(&path, Some(&lunch())).unwrap();
+        let mut after = json(&path);
+        assert_eq!(after["page"]["text"], "Lunch is ready");
+        after.as_object_mut().unwrap().remove("page");
+        assert_eq!(after, before, "nothing else in the file changes");
+
+        store.sync(&mut running).unwrap();
+        assert_eq!(running.page, Some(lunch()));
+        assert!(running.take_bell(), "it beeps as it comes in");
+        assert_eq!(running.city().map(|c| c.name), Some("Tokyo"));
+        store.sync(&mut running).unwrap();
+        assert!(!running.take_bell(), "once");
+
+        send_page(&path, None).unwrap();
+        store.sync(&mut running).unwrap();
+        assert!(running.page.is_none(), "--clear takes it down");
+        assert!(!running.take_bell());
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn a_page_waits_for_meridian_to_start() {
+        let path = scratch("waiting");
+        send_page(&path, Some(&lunch())).unwrap();
+        let (mut app, _) = open(&path);
+        assert_eq!(app.page, Some(lunch()));
+        assert!(!app.take_bell(), "no beep for what was there at the start");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600, "only its owner reads it");
+        }
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn leaves_alone_a_file_that_is_not_a_state() {
+        let path = scratch("not-a-state");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        for text in ["{ not json", "[1, 2]"] {
+            fs::write(&path, text).unwrap();
+            let error = send_page(&path, Some(&lunch())).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+            assert_eq!(fs::read_to_string(&path).unwrap(), text);
+        }
+        let _ = fs::remove_dir_all(path.parent().unwrap());
     }
 }
