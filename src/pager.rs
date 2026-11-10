@@ -3,6 +3,7 @@
 //! within a second, beeps, and scrolls it across a band at the bottom of the
 //! screen, like a pager, until it is dismissed. An emoticon on its own, such
 //! as :) or 👍, passes by as ASCII art instead, as large as the pane allows.
+//! Sent with `--url`, it carries a web address that a click on it opens.
 //!
 //! Where the message is at any moment follows from when it was sent and the
 //! time, as the weather scene's frames do: nothing is kept between frames,
@@ -28,10 +29,25 @@ pub struct Page {
     /// When it goes away by itself; absent, it stays until dismissed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub until: Option<DateTime<Utc>>,
+    /// The web address a click on the page, or `o`, opens: see `web_link`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link: Option<String>,
 }
 
 /// The longest message, in characters: a pager's worth.
 pub const MAX_CHARS: usize = 500;
+
+/// `text` as a page's link: an http or https address, with a host and no
+/// spaces. Nothing else is taken, so a click on a page only ever opens the
+/// browser: not a file, an app or a share another kind of address would.
+pub fn web_link(text: &str) -> Option<String> {
+    let link = text.trim();
+    let (scheme, rest) = link.split_once("://")?;
+    let web = scheme.eq_ignore_ascii_case("https") || scheme.eq_ignore_ascii_case("http");
+    let host = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    let spaces = link.chars().any(|ch| ch.is_whitespace() || ch.is_control());
+    (web && !host.is_empty() && !spaces).then(|| link.to_owned())
+}
 
 /// The band moves one column every this many milliseconds.
 pub const STEP_MS: u64 = 100;
@@ -657,8 +673,8 @@ struct Strip<'a> {
 
 /// Draws the page in its band, `area`, where it has scrolled to at `now`:
 /// the drawings of its emoticons when it is only that and they fit, else
-/// one line, after `label`. The band blinks as the page comes in. Returns
-/// how often it moves, in milliseconds.
+/// one line, after `label`, underlined as a link when it has one. The band
+/// blinks as the page comes in. Returns how often it moves, in milliseconds.
 pub fn draw(
     page: &Page,
     label: &str,
@@ -688,6 +704,10 @@ pub fn draw(
                 Style::new().fg(found[0].tint.color(palette)).bold(),
             ),
             None => (message, Style::new().bold()),
+        };
+        let style = match page.link {
+            Some(_) => style.underlined(),
+            None => style,
         };
         let spans = [
             Span::styled(label, palette.muted()),
@@ -816,6 +836,7 @@ mod tests {
     use super::*;
     use crate::theme::{Paint, THEMES};
     use chrono::{Duration, NaiveDate};
+    use ratatui::style::Modifier;
     use std::collections::HashSet;
 
     fn sent() -> DateTime<Utc> {
@@ -835,6 +856,7 @@ mod tests {
             text: text.into(),
             sent: sent(),
             until: None,
+            link: None,
         }
     }
 
@@ -880,6 +902,66 @@ mod tests {
         assert!(
             words.ends_with("word…") || words.ends_with("wor…"),
             "{words}"
+        );
+    }
+
+    #[test]
+    fn takes_only_web_addresses_for_a_link() {
+        let run = "https://github.com/acme/app/actions/runs/1?check=1#log";
+        assert_eq!(web_link(run).as_deref(), Some(run));
+        assert_eq!(
+            web_link("  HTTP://localhost:3000/ \n").as_deref(),
+            Some("HTTP://localhost:3000/"),
+            "trimmed, the scheme in any case"
+        );
+        assert_eq!(
+            web_link("https://pt.wikipedia.org/wiki/São_Paulo").as_deref(),
+            Some("https://pt.wikipedia.org/wiki/São_Paulo")
+        );
+        let refused = [
+            "",
+            "github.com/acme/app",
+            "https://",
+            "https:///path",
+            "https://?q=1",
+            "https://example.com/a b",
+            "https://example.com/\u{1b}[31m",
+            "file:///Applications/Calculator.app",
+            "smb://server/share",
+            "javascript://%0Aalert(1)",
+            "x-apple.systempreferences:com.apple.preference.security",
+            "-a Terminal https://example.com",
+            "mailto:ana@example.com",
+        ];
+        for text in refused {
+            assert_eq!(web_link(text), None, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn a_page_with_a_link_reads_as_one() {
+        let underlined = |page: &Page, x| {
+            let buf = band(page, 20, 1, after(1_250));
+            buf[(x, 0)].modifier.contains(Modifier::UNDERLINED)
+        };
+        let mut hi = page("Hi");
+        assert!(!underlined(&hi, 14), "no link, no underline");
+        hi.link = Some("https://example.com".into());
+        assert_eq!(
+            rows(&band(&hi, 20, 1, after(1_250))),
+            ["        16:04 Hi    "]
+        );
+        assert!(underlined(&hi, 14) && underlined(&hi, 15), "the message");
+        assert!(!underlined(&hi, 8), "not the time it came");
+
+        let mut thumbs = page("👍");
+        thumbs.link = Some("https://example.com".into());
+        let drawing = band(&thumbs, 40, 5, after(3_000));
+        let area = drawing.area;
+        assert!(
+            area.positions()
+                .all(|at| !drawing[at].modifier.contains(Modifier::UNDERLINED)),
+            "a drawing stays as it is"
         );
     }
 

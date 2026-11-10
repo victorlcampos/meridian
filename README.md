@@ -123,7 +123,8 @@ you pick.
   sends a message to the meridian running: it beeps and the message scrolls
   across the bottom of the screen until any key dismisses it, as with an
   alarm. An emoticon on its own, such as `:)`, `<3`, `(y)` or 👍, passes by
-  as ASCII art, as large as the pane allows.
+  as ASCII art, as large as the pane allows. With `--url`, a click on the
+  message, or `o`, opens the address in the browser and dismisses it.
 - **Responsive.** The digits grow and shrink with the window. The map goes
   under or beside the clock, whichever uses the pane best, and steps aside when
   there is no room. The time stays readable down to a 20×5 pane.
@@ -218,7 +219,8 @@ Accounts.
 
 While an alarm or reminder rings: any key stops it, `z` snoozes for 5 minutes
 and, for an event with a link, `o` opens it. While a message from `meridian
-page` scrolls by, any key dismisses it.
+page` scrolls by, any key dismisses it; for one sent with `--url`, a click on
+it or `o` opens the address first.
 
 ### Alarm times
 
@@ -308,6 +310,7 @@ as to a pager:
 meridian page "Deploy finished"             # scrolls until any key dismisses it
 meridian page ":)"                          # an emoticon alone passes by as ASCII art
 meridian page --for 10m "Coffee is ready"   # goes away by itself after 10 minutes
+meridian page --url https://github.com/acme/app/pull/7 "Review ready"
 make test && meridian page "(y)" || meridian page ":("
 echo "Backup done" | meridian page          # the message can come from a pipe
 meridian page --clear                       # takes the message down
@@ -320,6 +323,13 @@ key dismisses it and does nothing else. A new message takes the place of the
 one on screen. Copies running side by side all show it, and a key in any of
 them dismisses it in all; with no meridian running, the message waits in the
 state file for the next one to start.
+
+With `--url`, the message carries a web address: a click on it, or `o`, opens
+the address in the browser and dismisses the message, as any key would. The
+message shows underlined and the key hints read `click/o open link`. Only
+`http` and `https` addresses are taken, so a click opens the browser and
+nothing else. meridian asks the terminal for clicks only while such a message
+is on screen: the rest of the time the mouse selects and copies text as usual.
 
 An emoticon on its own, or a few of them, passes by as ASCII art: large where
 the pane has room, smaller in a small pane and as one line of ASCII in a tiny
@@ -452,7 +462,8 @@ qualquer terminal ou script, manda uma mensagem ao meridian aberto: ele apita
 e ela passa na parte de baixo da tela até qualquer tecla dispensá-la, como um
 alarme; um emoticon sozinho, como `:)`, `<3`, `(y)` ou 👍, passa como arte
 ASCII. Com `--for 10m` a mensagem sai sozinha depois de 10 minutos, e
-`--clear` a apaga.
+`--clear` a apaga. Com `--url https://…`, um clique na mensagem, ou `o`, abre
+o endereço no navegador e a dispensa.
 Tudo é salvo a cada mudança em `~/.config/meridian/state.json` e volta mesmo
 depois de o computador desligar. A interface fica em português quando `$LANG`
 começa com `pt`. `meridian update` instala a versão mais nova.

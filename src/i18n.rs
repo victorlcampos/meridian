@@ -75,6 +75,8 @@ pub struct Text {
     pub event_keys: Keys,
     /// Before the clock's keys while a page sent with `meridian page` shows.
     pub page_keys: Keys,
+    /// Before `page_keys` when the page has a link.
+    pub page_link_keys: Keys,
     pub choose_keys: Keys,
     pub help_keys: Keys,
     weekdays: [&'static str; 7],
@@ -177,6 +179,7 @@ const EN: Text = Text {
     ],
     event_keys: &[("↑↓", "choose"), ("Enter", "open link")],
     page_keys: &[("any key", "dismiss")],
+    page_link_keys: &[("click/o", "open link")],
     choose_keys: &[("↑↓", "choose"), ("Enter", "connect"), ("Esc", "close")],
     help_keys: &[
         ("c  /", "add a city (it takes the place of local time)"),
@@ -197,7 +200,8 @@ const EN: Text = Text {
         ("", "and, for an event, o opens its link."),
         ("", ""),
         ("", "A message sent with meridian page scrolls"),
-        ("", "at the bottom until any key dismisses it."),
+        ("", "at the bottom until any key dismisses it;"),
+        ("", "with --url, a click on it or o opens the link."),
     ],
     weekdays: [
         "Monday",
@@ -328,6 +332,7 @@ const PT: Text = Text {
     ],
     event_keys: &[("↑↓", "escolher"), ("Enter", "abrir link")],
     page_keys: &[("qualquer tecla", "dispensar")],
+    page_link_keys: &[("clique/o", "abrir link")],
     choose_keys: &[("↑↓", "escolher"), ("Enter", "conectar"), ("Esc", "fechar")],
     help_keys: &[
         ("c  /", "adicionar uma cidade (ela substitui a hora local)"),
@@ -351,7 +356,8 @@ const PT: Text = Text {
         ("", "e, se for um evento, o abre o link dele."),
         ("", ""),
         ("", "Uma mensagem enviada com meridian page passa"),
-        ("", "embaixo até qualquer tecla dispensá-la."),
+        ("", "embaixo até qualquer tecla dispensá-la;"),
+        ("", "com --url, um clique nela ou o abre o link."),
     ],
     weekdays: [
         "segunda-feira",
@@ -498,6 +504,7 @@ mod tests {
         assert_eq!(keys(en.ringing_link_keys), keys(pt.ringing_link_keys));
         assert_eq!(keys(en.event_keys), keys(pt.event_keys));
         assert_eq!(en.page_keys.len(), pt.page_keys.len());
+        assert_eq!(en.page_link_keys.len(), pt.page_link_keys.len());
         assert_eq!(en.alarm_keys.len(), pt.alarm_keys.len());
     }
 }
