@@ -382,6 +382,7 @@ mod tests {
             text: "Lunch is ready".into(),
             sent: now(),
             until: None,
+            link: None,
         }
     }
 
@@ -416,6 +417,27 @@ mod tests {
         store.sync(&mut running).unwrap();
         assert!(running.page.is_none(), "--clear takes it down");
         assert!(!running.take_bell());
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn a_page_brings_its_link_along() {
+        let path = scratch("link");
+        send_page(&path, Some(&lunch())).unwrap();
+        assert!(
+            json(&path)["page"].get("link").is_none(),
+            "no link, no field"
+        );
+
+        let menu = "https://example.com/menu";
+        let page = Page {
+            link: Some(menu.into()),
+            ..lunch()
+        };
+        send_page(&path, Some(&page)).unwrap();
+        assert_eq!(json(&path)["page"]["link"], menu);
+        let (running, _) = open(&path);
+        assert_eq!(running.page, Some(page));
         let _ = fs::remove_dir_all(path.parent().unwrap());
     }
 

@@ -18,6 +18,7 @@ mod weather_fx;
 mod worldmap;
 mod zone;
 
+use std::fmt;
 use std::io::{self, IsTerminal, Read, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -25,7 +26,8 @@ use std::process::ExitCode;
 use chrono::{Duration, Utc};
 use clap::{Parser, Subcommand};
 use ratatui::DefaultTerminal;
-use ratatui::crossterm::event::{self, Event, KeyEventKind};
+use ratatui::crossterm::event::{self, Event, KeyEventKind, MouseButton, MouseEventKind};
+use ratatui::crossterm::{self, execute};
 use ratatui::style::Color;
 
 use crate::app::App;
@@ -112,8 +114,9 @@ enum Command {
     /// the message scrolls across its screen until any key dismisses it
     ///
     /// An emoticon on its own, such as :) <3 (y) or 👍, passes by as ASCII
-    /// art. Copies of meridian side by side all show the message, and one
-    /// started later still finds it.
+    /// art. With --url, a click on the message, or o, opens the address in
+    /// the browser and dismisses the message. Copies of meridian side by
+    /// side all show the message, and one started later still finds it.
     #[command(visible_alias = "bip")]
     Page {
         /// The message; read from the standard input when left out. One
@@ -125,8 +128,13 @@ enum Command {
         #[arg(long = "for", value_name = "DURATION", value_parser = parse_duration)]
         duration: Option<Duration>,
 
+        /// Web address (http or https) that a click on the message, or o,
+        /// opens, dismissing the message
+        #[arg(long, value_name = "URL", value_parser = parse_url)]
+        url: Option<String>,
+
         /// Take down the message on screen
-        #[arg(long, conflicts_with_all = ["message", "duration"])]
+        #[arg(long, conflicts_with_all = ["message", "duration", "url"])]
         clear: bool,
 
         /// State file of the meridian to page
@@ -145,6 +153,12 @@ fn parse_duration(text: &str) -> Result<Duration, String> {
         .ok_or_else(|| format!("invalid duration {text:?}; try 10m, 1h30 or 90s"))
 }
 
+fn parse_url(text: &str) -> Result<String, String> {
+    pager::web_link(text).ok_or_else(|| {
+        format!("invalid URL {text:?}; give one that starts with https:// or http://")
+    })
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
@@ -155,9 +169,10 @@ fn main() -> ExitCode {
         Some(Command::Page {
             message,
             duration,
+            url,
             clear,
             state,
-        }) => return page(&message, duration, clear, state),
+        }) => return page(&message, duration, url, clear, state),
         None => {}
     }
     if !cli.calendar_helper.is_empty() {
@@ -243,6 +258,7 @@ fn main() -> ExitCode {
 fn page(
     words: &[String],
     duration: Option<Duration>,
+    link: Option<String>,
     clear: bool,
     state: Option<PathBuf>,
 ) -> ExitCode {
@@ -282,6 +298,7 @@ fn page(
             text,
             sent,
             until: duration.map(|duration| sent + duration),
+            link,
         })
     };
     match state::send_page(&path, page.as_ref()) {
@@ -293,7 +310,64 @@ fn page(
     }
 }
 
+/// Asks the terminal to report clicks, or to stop: presses and releases
+/// only (mode 1000), in SGR coordinates (1006) for windows wider than 223
+/// columns. crossterm's `EnableMouseCapture` asks for every move of the
+/// mouse as well, which would wake the clock, and read the state file, for
+/// nothing.
+struct ReportClicks(bool);
+
+impl crossterm::Command for ReportClicks {
+    fn write_ansi(&self, f: &mut impl fmt::Write) -> fmt::Result {
+        f.write_str(match self.0 {
+            true => "\x1b[?1000h\x1b[?1006h",
+            false => "\x1b[?1006l\x1b[?1000l",
+        })
+    }
+
+    /// The Windows console has a switch of its own for the mouse.
+    #[cfg(windows)]
+    fn execute_winapi(&self) -> io::Result<()> {
+        use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
+        match self.0 {
+            true => crossterm::Command::execute_winapi(&EnableMouseCapture),
+            false => crossterm::Command::execute_winapi(&DisableMouseCapture),
+        }
+    }
+
+    #[cfg(windows)]
+    fn is_ansi_code_supported(&self) -> bool {
+        false
+    }
+}
+
+/// Whether the terminal reports clicks to meridian: only while a page's
+/// link is on screen to click, so the rest of the time the mouse stays the
+/// terminal's, to select and copy text.
+#[derive(Default)]
+struct Mouse {
+    clicks: bool,
+}
+
+impl Mouse {
+    fn report_clicks(&mut self, on: bool) -> io::Result<()> {
+        if self.clicks != on {
+            execute!(io::stdout(), ReportClicks(on))?;
+            self.clicks = on;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for Mouse {
+    /// However meridian ends, the terminal gets its mouse back.
+    fn drop(&mut self) {
+        let _ = self.report_clicks(false);
+    }
+}
+
 fn run(terminal: &mut DefaultTerminal, app: &mut App, store: &mut Option<Store>) -> io::Result<()> {
+    let mut mouse = Mouse::default();
     loop {
         let now = Utc::now();
         app.tick(now);
@@ -309,13 +383,21 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App, store: &mut Option<Store>)
             io::stdout().write_all(b"\x07")?;
             io::stdout().flush()?;
         }
-        let mut animation = None;
-        terminal.draw(|frame| animation = ui::render(frame, app, now))?;
-        if event::poll(app.next_wakeup(now, animation))?
-            && let Event::Key(key) = event::read()?
-            && key.kind == KeyEventKind::Press
-        {
-            app.on_key(key, Utc::now());
+        let mut drawn = ui::Drawn::default();
+        terminal.draw(|frame| drawn = ui::render(frame, app, now))?;
+        mouse.report_clicks(drawn.link.is_some())?;
+        if !event::poll(app.next_wakeup(now, drawn.animation))? {
+            continue;
+        }
+        match event::read()? {
+            Event::Key(key) if key.kind == KeyEventKind::Press => app.on_key(key, Utc::now()),
+            Event::Mouse(click)
+                if click.kind == MouseEventKind::Down(MouseButton::Left)
+                    && drawn.on_link(click.column, click.row) =>
+            {
+                app.open_page(Utc::now());
+            }
+            _ => {}
         }
     }
 }
@@ -383,5 +465,45 @@ mod tests {
         assert!(page(&["--clear"]).2);
         assert!(parse(&["page", "--clear", "Hi"]).is_err());
         assert!(parse(&["page", "--clear", "--for", "5m"]).is_err());
+        let run = "https://example.com/run/1";
+        assert!(parse(&["page", "--clear", "--url", run]).is_err());
+    }
+
+    #[test]
+    fn takes_the_web_address_a_click_opens() {
+        let url = |args: &[&str]| match parse(&[&["page"], args].concat()) {
+            Ok(Cli {
+                command: Some(Command::Page { url, .. }),
+                ..
+            }) => Ok(url),
+            Ok(_) => panic!("not a page"),
+            Err(error) => Err(error.to_string()),
+        };
+        let run = "https://github.com/acme/app/actions/runs/1";
+        assert_eq!(
+            url(&["--url", run, "Deploy", "finished"]),
+            Ok(Some(run.into()))
+        );
+        assert_eq!(
+            url(&["Deploy finished", "--url", run]),
+            Ok(Some(run.into()))
+        );
+        assert_eq!(url(&["Deploy finished"]), Ok(None));
+        let error = url(&["--url", "github.com/acme/app", "Hi"]).unwrap_err();
+        assert!(error.contains("starts with https://"), "{error}");
+        assert!(url(&["--url", "file:///etc/hosts", "Hi"]).is_err());
+    }
+
+    #[test]
+    fn asks_the_terminal_for_clicks_and_nothing_more() {
+        let ansi = |on| {
+            let mut codes = String::new();
+            crossterm::Command::write_ansi(&ReportClicks(on), &mut codes).unwrap();
+            codes
+        };
+        let on = ansi(true);
+        assert!(on.contains("[?1000h") && on.contains("[?1006h"), "{on:?}");
+        assert!(!on.contains("[?1003h"), "not every move of the mouse");
+        assert_eq!(ansi(false), "\x1b[?1006l\x1b[?1000l", "and undoes it");
     }
 }

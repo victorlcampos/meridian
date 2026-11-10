@@ -6,7 +6,7 @@ use std::ops::Range;
 use chrono::{DateTime, FixedOffset, Utc};
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
-use ratatui::layout::Rect;
+use ratatui::layout::{Position, Rect};
 use ratatui::style::{Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Widget};
@@ -24,10 +24,27 @@ use crate::worldmap::{MapColors, Marker, WorldMap};
 use crate::zone::format_offset;
 use crate::{clockface, layout, pager, solar};
 
-/// Draws the whole screen. Returns how often, in milliseconds, the picture
-/// changes by itself: the frame period of a live weather scene on screen,
-/// or of a page scrolling by, whichever is quicker.
-pub fn render(frame: &mut Frame, app: &App, now: DateTime<Utc>) -> Option<u64> {
+/// What a frame drawn tells the loop that waits for the next one.
+#[derive(Debug, Default, PartialEq)]
+pub struct Drawn {
+    /// How often, in milliseconds, the picture changes by itself: the frame
+    /// period of a live weather scene on screen, or of a page scrolling by,
+    /// whichever is quicker.
+    pub animation: Option<u64>,
+    /// The band of a page with a link, which a click opens.
+    pub link: Option<Rect>,
+}
+
+impl Drawn {
+    /// Whether a click at `column`, `row` lands on the page's link.
+    pub fn on_link(&self, column: u16, row: u16) -> bool {
+        self.link
+            .is_some_and(|band| band.contains(Position::new(column, row)))
+    }
+}
+
+/// Draws the whole screen.
+pub fn render(frame: &mut Frame, app: &App, now: DateTime<Utc>) -> Drawn {
     let area = frame.area();
     let palette = app.palette();
     let page = app.page_on_screen(now);
@@ -45,10 +62,12 @@ pub fn render(frame: &mut Frame, app: &App, now: DateTime<Utc>) -> Option<u64> {
     // The tab wants its map but the window has no room for it.
     let map_no_room = app.show_map && screen.map.is_none();
     let mut animation = render_clock(app, now, screen.clock, map_no_room, buf);
+    let mut link = None;
     if let (Some(band), Some(page)) = (screen.pager, page) {
         let label = pager::label(page, app.system, app.lang, now);
         let pace = pager::draw(page, &label, band, &palette, now, buf);
         animation = animation.into_iter().chain(pace).min();
+        link = app.page_link(now).map(|_| band);
     }
     if let Some(map) = screen.map {
         // A city tab marks its city; the local tab marks every city with a tab.
@@ -95,7 +114,7 @@ pub fn render(frame: &mut Frame, app: &App, now: DateTime<Utc>) -> Option<u64> {
     if app.blink_on(now) {
         frame.buffer_mut().set_style(area, palette.flash());
     }
-    animation
+    Drawn { animation, link }
 }
 
 /// A tab per clock with its current time. When they do not all fit the times
@@ -886,12 +905,15 @@ fn render_keys(app: &App, now: DateTime<Utc>, area: Rect, buf: &mut Buffer) {
             Mode::Help => &[],
         }
     };
-    // The keys that open an event's link come first, when there is one.
+    // The keys that open an event's or a page's link come first, when there
+    // is one.
     let lead: Keys = if !app.ringing.is_empty() {
         match app.ringing_link() {
             Some(_) => text.ringing_link_keys,
             None => &[],
         }
+    } else if app.page_link(now).is_some() {
+        text.page_link_keys
     } else if matches!(app.mode, Mode::Calendar(CalendarPanel::Status(_)))
         && app.agenda(now).any(|event| event.link.is_some())
     {
@@ -1486,6 +1508,7 @@ mod tests {
         apps.push(calendar);
         apps.push(with_page("Reunião às 15h na sala 3 🚀"));
         apps.push(with_page("👍 ❤️ \\o/"));
+        apps.push(with_linked_page("Deploy finished · 会議室"));
         // The help open as a page comes in.
         let mut paged = with_city("Tokyo");
         paged.on_key(KeyEvent::from(KeyCode::Char('?')), now());
@@ -1493,6 +1516,7 @@ mod tests {
             text: "<3".into(),
             sent: now() - Duration::seconds(3),
             until: None,
+            link: Some("https://example.com".into()),
         });
         apps.push(paged);
         for mode in 0..3 {
@@ -2095,12 +2119,7 @@ mod tests {
             let mut app = with_weather("Tokyo");
             app.show_map = false;
             app.weather_fx = fx;
-            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-            let mut animation = None;
-            terminal
-                .draw(|frame| animation = render(frame, &app, now()))
-                .unwrap();
-            animation
+            drawn_in(&app, width, height).animation
         };
         assert_eq!(pace(Fx::Live, 100, 30), Some(125), "drizzle");
         assert_eq!(pace(Fx::Still, 100, 30), None);
@@ -2434,7 +2453,14 @@ mod tests {
             text: text.into(),
             sent: now(),
             until: None,
+            link: None,
         });
+        app
+    }
+
+    fn with_linked_page(text: &str) -> App {
+        let mut app = with_page(text);
+        app.page.as_mut().unwrap().link = Some("https://github.com/acme/app/pull/7".into());
         app
     }
 
@@ -2481,18 +2507,63 @@ mod tests {
         assert!(text.contains("13:04 :D"), "no room to draw it: {text}");
     }
 
+    /// What `render` tells the loop, in a `width` × `height` window.
+    fn drawn_in(app: &App, width: u16, height: u16) -> Drawn {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        let mut drawn = Drawn::default();
+        terminal
+            .draw(|frame| drawn = render(frame, app, now()))
+            .unwrap();
+        drawn
+    }
+
     #[test]
     fn a_page_on_screen_sets_the_pace() {
-        let pace = |app: &App, width, height| {
-            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-            let mut animation = None;
-            terminal
-                .draw(|frame| animation = render(frame, app, now()))
-                .unwrap();
-            animation
-        };
+        let pace = |app: &App, width, height| drawn_in(app, width, height).animation;
         assert_eq!(pace(&with_page("Hi"), 80, 24), Some(100));
         assert_eq!(pace(&app(), 80, 24), None);
         assert_eq!(pace(&with_page("Hi"), 80, 1), None, "no room for it");
+    }
+
+    #[test]
+    fn a_click_on_the_band_of_a_page_with_a_link_opens_it() {
+        let drawn = drawn_in(&with_linked_page("Review ready"), 80, 24);
+        assert_eq!(drawn.link, Some(Rect::new(0, 22, 80, 1)));
+        assert!(drawn.on_link(0, 22) && drawn.on_link(79, 22));
+        assert!(!drawn.on_link(40, 21), "the clock above");
+        assert!(!drawn.on_link(40, 23), "the key hints below");
+        let party = drawn_in(&with_linked_page("🎉"), 80, 24).link;
+        assert_eq!(party, Some(Rect::new(0, 13, 80, 10)), "all of a drawing");
+
+        let link = |app: &App| drawn_in(app, 80, 24).link;
+        assert_eq!(link(&with_page("Review ready")), None, "no link to open");
+        let mut help = with_linked_page("Review ready");
+        help.mode = Mode::Help;
+        assert_eq!(link(&help), None, "the help has the keys");
+        let mut ringing = with_linked_page("Review ready");
+        ringing.add_alarm(When::In(Duration::seconds(1)), String::new(), now());
+        ringing.tick(now() + Duration::seconds(1));
+        assert_eq!(link(&ringing), None, "the alarm comes first");
+        let strip = drawn_in(&with_linked_page("Review ready"), 80, 1).link;
+        assert_eq!(strip, None, "no band to click");
+    }
+
+    #[test]
+    fn offers_to_open_the_link_of_the_page() {
+        let later = now() + Duration::seconds(5);
+        let footer = row(&draw(&with_linked_page("Review ready"), 80, 24, later), 23);
+        assert!(
+            footer.contains("click/o open link  any key dismiss"),
+            "{footer}"
+        );
+        let mut portuguese = with_linked_page("Revisão pronta");
+        portuguese.lang = Lang::Pt;
+        let footer = row(&draw(&portuguese, 80, 24, later), 23);
+        assert!(
+            footer.contains("clique/o abrir link  qualquer tecla dispensar"),
+            "{footer}"
+        );
+        let footer = row(&draw(&with_page("Review ready"), 80, 24, later), 23);
+        assert!(!footer.contains("open link"), "{footer}");
     }
 }

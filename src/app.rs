@@ -474,6 +474,25 @@ impl App {
         page.until.is_none_or(|until| now < until).then_some(page)
     }
 
+    /// The link of the page on screen, for `o` or a click on it to open:
+    /// only while the clock has the keys, which a ringing alarm and the
+    /// pop-ups take before the page.
+    pub fn page_link(&self, now: DateTime<Utc>) -> Option<&str> {
+        if !self.ringing.is_empty() || !matches!(self.mode, Mode::Clock) {
+            return None;
+        }
+        self.page_on_screen(now)?.link.as_deref()
+    }
+
+    /// Opens the link of the page on screen and dismisses the page, from
+    /// every copy: what `o` and a click on its band do.
+    pub fn open_page(&mut self, now: DateTime<Utc>) {
+        if let Some(link) = self.page_link(now) {
+            (self.open)(link);
+            self.page = None;
+        }
+    }
+
     pub fn tab(&self) -> &Tab {
         &self.tabs[self.active]
     }
@@ -837,8 +856,12 @@ impl App {
             return;
         }
         // Like an alarm, a page on the clock goes with any key, which does
-        // nothing else; it goes from every copy.
+        // nothing else but, as for a reminder, o opens its link; it goes
+        // from every copy.
         if matches!(self.mode, Mode::Clock) && self.page_on_screen(now).is_some() {
+            if key.code == KeyCode::Char('o') {
+                self.open_page(now);
+            }
             self.page = None;
             return;
         }
@@ -2175,7 +2198,81 @@ END:VCALENDAR
             text: text.into(),
             sent: now(),
             until,
+            link: None,
         }
+    }
+
+    const RUN: &str = "https://github.com/acme/app/actions/runs/1";
+
+    /// A page with a link on screen, with the links the app opens recorded.
+    fn with_linked_page() -> (App, Arc<Mutex<Vec<String>>>) {
+        let mut app = two_cities();
+        let opened = record_opened(&mut app);
+        app.page = Some(Page {
+            link: Some(RUN.into()),
+            ..page("Deploy finished", None)
+        });
+        (app, opened)
+    }
+
+    #[test]
+    fn o_opens_the_link_of_the_page_and_dismisses_it() {
+        let (mut app, opened) = with_linked_page();
+        assert_eq!(app.page_link(now()), Some(RUN));
+        press(&mut app, KeyCode::Char('o'));
+        assert_eq!(*opened.lock().unwrap(), [RUN]);
+        assert!(app.page.is_none() && app.state().page.is_none());
+        assert!(matches!(app.mode, Mode::Clock) && app.active == 2);
+    }
+
+    #[test]
+    fn a_click_on_the_page_opens_its_link_and_dismisses_it() {
+        let (mut app, opened) = with_linked_page();
+        app.open_page(now());
+        assert_eq!(*opened.lock().unwrap(), [RUN]);
+        assert!(app.page.is_none());
+        app.open_page(now());
+        assert_eq!(opened.lock().unwrap().len(), 1, "gone, nothing to open");
+    }
+
+    #[test]
+    fn other_keys_dismiss_the_page_without_opening_its_link() {
+        for key in [KeyCode::Enter, KeyCode::Esc, KeyCode::Char('q')] {
+            let (mut app, opened) = with_linked_page();
+            press(&mut app, key);
+            assert!(app.page.is_none() && !app.quit, "{key:?}");
+            assert!(opened.lock().unwrap().is_empty(), "{key:?}");
+        }
+        let mut app = two_cities();
+        let opened = record_opened(&mut app);
+        app.page = Some(page("Lunch is ready", None));
+        assert_eq!(app.page_link(now()), None);
+        press(&mut app, KeyCode::Char('o'));
+        assert!(app.page.is_none(), "o dismisses one without a link");
+        assert!(opened.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn the_link_waits_while_an_alarm_rings_or_a_pop_up_is_open() {
+        let (mut app, opened) = with_linked_page();
+        app.add_alarm(When::In(Duration::seconds(1)), String::new(), now());
+        app.tick(now() + Duration::seconds(1));
+        assert_eq!(app.page_link(now()), None, "the alarm comes first");
+        app.open_page(now());
+        press(&mut app, KeyCode::Char('o'));
+        assert!(app.ringing.is_empty(), "o stopped the alarm");
+        assert!(app.page.is_some() && opened.lock().unwrap().is_empty());
+        assert_eq!(app.page_link(now()), Some(RUN), "and the page has it now");
+
+        app.mode = Mode::Help;
+        assert_eq!(app.page_link(now()), None, "the help has the keys");
+        app.open_page(now());
+        assert!(app.page.is_some() && opened.lock().unwrap().is_empty());
+
+        app.mode = Mode::Clock;
+        let later = now() + Duration::minutes(10);
+        app.page.as_mut().unwrap().until = Some(later);
+        assert_eq!(app.page_link(later), None, "a page gone has no link");
     }
 
     #[test]
